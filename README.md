@@ -1,24 +1,73 @@
-# Veritas Gate — Phase 1: Smart Contract Foundation
+# Veritas Gate — Governance Contracts & Treasury Guard
 
 > [!WARNING]
-> **EDUCATIONAL HARNESS ONLY — NOT PRODUCTION SECURE**
-> This repository is a minimal educational test harness designed to demonstrate EVM storage collision risks and execution boundaries between `call` and `delegatecall`.
-> Exposing arbitrary `delegatecall` functionality in a treasury or governance contract allows arbitrary code execution and contract takeover. **Never deploy this architecture to a live network or production environment.**
+> **LOCAL EDUCATIONAL HARNESS ONLY — NOT PRODUCTION READY**
+> This repository is a modular educational test harness designed to demonstrate:
+> 1. EVM execution dynamics (`call` vs `delegatecall` storage collisions).
+> 2. Automated simulation & security trace analysis.
+> 3. Proposal commitment registries, verdict oracles, and guarded treasury execution with 2-of-3 guardian emergency pause.
+> **Never deploy these contracts to a live public network or mainnet environment.**
 
 ---
 
-## 1. Overview & Objective
+## 1. Overview & Architecture
 
-Phase 1 establishes the smart contract foundation for Veritas Gate. The goal is to demonstrate in a clean, reproducible Foundry environment:
-1. How an **honest DAO grant proposal** distributes funds without side effects.
-2. How a **malicious payload** leverages `delegatecall` storage collisions to overwrite Treasury state (ownership hijacking).
-3. How the EVM execution boundary under standard `call` protects Treasury storage from callee state mutations.
+Veritas Gate enforces proposal integrity, human-review gates, and challenge-window rules before governance proposals can execute against a guarded Treasury:
+
+```
+contracts/
+├── MockToken.sol           # Minimal ERC-20 token (balances, transfer, approve, transferFrom, mint)
+├── Treasury.sol            # Phase 1 educational demonstration treasury (call vs delegatecall)
+├── ProposalRegistry.sol    # Phase 4 immutable versioned proposal commitment registry
+├── VerdictOracle.sol       # Phase 4 simulation verdict, human review history & challenge oracle
+├── GuardedTreasury.sol     # Phase 4 guarded treasury with 2-of-3 guardian pause & verification guards
+├── payloads/
+│   ├── Honest.sol          # 5M token grant without storage mutations
+│   └── Malicious.sol       # 5M token grant with deliberate Slot 0 collision (unsafe)
+└── test/
+    ├── Step1.t.sol         # Phase 1 call vs delegatecall test suite
+    └── Phase4.t.sol        # Phase 4 governance, oracle, guard, & multisig test suite
+```
 
 ---
 
-## 2. Token Denomination
+## 2. Core Governance Contracts (Phase 4)
 
-All contracts in this harness use a consistent, standard EVM token denomination:
+### 1. `ProposalRegistry.sol`
+- **Immutable Versioning**: Submitting a proposal creates version 1. Updates append sequential, immutable versions without modifying past history.
+- **Commitments**: Binds proposal text hash (`keccak256`), calldata hash (`keccak256`), and disclosed participant addresses.
+- **Integrity Verification**: `verifyLatestHashes(...)` allows callers to verify execution calldata and text against the latest registered proposal version.
+- **Validation**: Rejects empty fields, duplicate version content, and unauthorized authors.
+
+### 2. `VerdictOracle.sol`
+- **Automated Verdicts**: The simulation analyzer posts automated verification verdicts:
+  - `VERIFIED`: Proposal matches simulation invariants.
+  - `MISMATCH`: Proposal effects deviate from claims; permanently blocks execution.
+  - `NEEDS_REVIEW`: High-risk or complex proposal requiring authorized human review.
+- **Human Review History**: Authorized reviewers from an allowlist can post reviews (`APPROVE`, `REJECT`, `ESCALATE`) along with a reason hash. All reviews are appended immutably to history and never overwrite the original automated verdict records.
+- **Challenge System**: Challenges can be raised during the challenge window. Unresolved or successfully upheld challenges immediately block execution.
+
+### 3. `GuardedTreasury.sol`
+- **Removed Unrestricted Delegatecall**: Only standard, isolated EVM `call` is permitted. Any unrestricted delegatecall path is permanently removed.
+- **Proposal Guard Invariants**: Before executing any proposal, the contract verifies:
+  1. **Replay Protection**: Proposal version has not been executed previously.
+  2. **Governance Authorization**: Proposal version was explicitly authorized.
+  3. **Target & Value Binding**: Execution target and native value match authorization.
+  4. **Calldata Commitment**: `keccak256(data)` matches the registered `calldataHash`.
+  5. **Oracle Commitment**: Text hash and calldata hash match oracle commitments.
+  6. **Verdict Eligibility**: Status is `VERIFIED` or `NEEDS_REVIEW` with an authorized `APPROVE` review.
+  7. **Challenge Window**: Configured challenge window (default: 2 days / 172,800s) has elapsed.
+  8. **No Challenges**: No active unresolved challenge and no disqualification.
+  9. **Emergency Pause**: Contract is not paused.
+- **2-of-3 Guardian Emergency Pause**:
+  - Three distinct guardian addresses configured.
+  - Pausing requires 2 distinct guardians to approve the same `reasonHash`. No single guardian can pause alone.
+  - Unpausing requires 2 guardian approvals or governance owner intervention.
+
+---
+
+## 3. Token Denomination
+
 - **Token**: `MockToken` (ERC-20 compatible)
 - **Decimals**: `18` (matches WETH, DAI, and standard DAO governance tokens)
 - **Base Unit**: `1 token = 1 * 10^18` wei (`1e18`)
@@ -27,104 +76,43 @@ All contracts in this harness use a consistent, standard EVM token denomination:
 
 ---
 
-## 3. Storage Layout & The `delegatecall` Mechanism
-
-### EVM Execution Context
-- **Standard `call`**: Executes the callee contract's bytecode in the **callee's** context. `msg.sender` inside the callee is the caller (`Treasury`), and any state variable writes affect only the callee's own storage.
-- **`delegatecall`**: Executes the target contract's bytecode in the **caller's** context. `address(this)`, `msg.sender`, `msg.value`, and the **storage trie** belong to the caller (`Treasury`).
-
-### Storage Layout Alignment
-
-In Solidity, contract state variables are assigned sequentially to 32-byte storage slots starting at slot 0:
-
-| Storage Slot | `Treasury.sol` Variable | `MaliciousPayload.sol` Variable | Effect under `delegatecall` |
-| :--- | :--- | :--- | :--- |
-| **Slot 0** | `address public owner;` | `address public hijackedOwner;` | **Collision**: Writing `hijackedOwner = attacker` overwrites `Treasury.owner`. |
-| **Slot 1** | `address public token;` | `address public preservedToken;` | Aligned with token address slot. |
-
-`HonestPayload.sol` declares **zero storage variables** (only constants). When executed via `delegatecall`, it reads no storage and writes no storage, ensuring `Treasury` state remains intact.
-
----
-
-## 4. Contract Architecture
-
-```
-contracts/
-├── MockToken.sol           # Minimal ERC-20 token (balances, transfer, approve, transferFrom, mint)
-├── Treasury.sol            # Owner-controlled treasury with call & delegatecall executors
-├── payloads/
-│   ├── Honest.sol          # 5M token grant without storage mutations
-│   └── Malicious.sol       # 5M token grant with deliberate Slot 0 collision (unsafe)
-└── test/
-    └── Step1.t.sol         # Comprehensive Foundry test suite
-```
-
-### Core Contracts:
-1. **`MockToken.sol`**: Standalone ERC-20 token implementation supporting balances, allowances, transfers, approvals, and testing mints.
-2. **`Treasury.sol`**:
-   - `executeCall(address target, uint256 value, bytes calldata data)`: Standard call execution. Isolates storage and bubbles up revert data.
-   - `executeDelegateCall(address target, bytes calldata data)`: Demonstration delegatecall execution path. Bubbles up revert data and emits execution events.
-3. **`payloads/Honest.sol`**:
-   - Dispatches a 5,000,000 token grant to a specified recipient.
-   - No state variables; touches zero storage slots.
-4. **`payloads/Malicious.sol`**:
-   - Dispatches a 5,000,000 token grant to a recipient.
-   - Modifies slot 0 (`hijackedOwner = attacker`), seizing Treasury ownership when executed via `delegatecall`.
-
----
-
-## 5. Prerequisites & Setup
+## 4. Setup & Running Tests
 
 ### Prerequisites
-- [Foundry](https://getfoundry.sh/) (`forge`, `cast`, `anvil`)
-- Operating System: Linux / macOS / WSL
+- [Foundry](https://getfoundry.sh/) (`forge`, `anvil`)
+- Python 3.10+ (for Phase 2 analyzer)
 
-### Installation
-
-If Foundry is not yet installed:
-```bash
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
-```
-
-Clone the repository and install `forge-std` (if missing):
-```bash
-# If lib/forge-std is not present:
-mkdir -p lib/forge-std
-curl -L https://github.com/foundry-rs/forge-std/archive/refs/tags/v1.9.4.tar.gz | tar -xz --strip-components=1 -C lib/forge-std
-```
-
----
-
-## 6. Running Tests & Expected Results
-
-Run the Foundry test suite with double verbosity:
+### Run Foundry Test Suite (Phases 1 & 4)
 ```bash
 forge test -vv
 ```
 
-### Expected Results
+Expected output:
 ```text
-[PASS] test_HonestDelegateCall_GrantDistributed_OwnershipPreserved() (gas: ...)
-[PASS] test_HonestNormalCall_DirectTransfer() (gas: ...)
-[PASS] test_MaliciousDelegateCall_GrantDistributed_OwnershipHijacked() (gas: ...)
-[PASS] test_MaliciousNormalCall_CannotChangeTreasuryStorage_RevertsSafely() (gas: ...)
-[PASS] test_MaliciousNormalCall_EvenIfFunded_CannotModifyTreasuryOwner() (gas: ...)
-[PASS] test_UnauthorizedCaller_RevertsOnExecuteCall() (gas: ...)
-[PASS] test_UnauthorizedCaller_RevertsOnExecuteDelegateCall() (gas: ...)
-Suite result: ok. 7 passed; 0 failed; 0 skipped
+Ran 7 tests for contracts/test/Step1.t.sol:Step1Test
+[PASS] ... 7 passed
+
+Ran 19 tests for contracts/test/Phase4.t.sol:Phase4Test
+[PASS] ... 19 passed
+
+Suite result: ok. 26 passed; 0 failed; 0 skipped
 ```
 
-### Verified Properties
-- **Honest Payload (`delegatecall`)**: Recipient balance increases by 5M tokens; Treasury balance decreases by 5M tokens; `Treasury.owner` is unchanged.
-- **Malicious Payload (`delegatecall`)**: Recipient balance increases by 5M tokens; Treasury balance decreases by 5M tokens; `Treasury.owner` is hijacked by the attacker address.
-- **Malicious Payload (`call`)**: Callee storage writes cannot escape into Treasury storage; Treasury ownership remains 100% unchanged; unbacked transfer reverts safely.
-- **Access Control**: Non-owner addresses cannot invoke `executeCall` or `executeDelegateCall`.
+### Run Python Analyzer Test Suite (Phase 2)
+```bash
+.venv/bin/pytest -q
+```
+
+Expected output:
+```text
+25 passed in ...s
+```
 
 ---
 
-## 7. Known Limitations
+## 5. Security Invariants Tested
 
-- **Educational Scope**: Built strictly to illustrate EVM call vs delegatecall execution dynamics.
-- **No Governance Mechanics**: Does not implement timelocks, quorum thresholds, voting tokens, or multi-signature controls.
-- **Single Token Treasury**: Assumes a primary ERC-20 token.
+- **Unauthorized Roles**: Unauthorized callers cannot post oracle verdicts, submit human reviews, or trigger guardian pause.
+- **Rejection of Unsafe Proposals**: Execution is blocked by `MISMATCH`, unapproved `NEEDS_REVIEW`, `REJECT` reviews, active challenges, and disqualified proposals.
+- **Integrity Protections**: Replay attacks, calldata substitution after authorization, and early execution before the challenge window elapses are strictly blocked.
+- **Multisig Resilience**: Single guardians cannot pause alone; exact 2-of-3 consensus is required.
