@@ -1,0 +1,11 @@
+# Foundry
+out/
+cache/
+
+# Environment variables (prevent accidental secret commits)
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
