@@ -1,8 +1,10 @@
 """
 analyzer
 ========
-Veritas Gate Phase 3 Claims & Deterministic Verdict Engine.
+Veritas Gate Simulation & Deterministic Verdict Engine.
 """
+
+__version__ = "0.1.0"
 
 from .claims import (
     BaseClaim,
@@ -33,7 +35,7 @@ from .compare import (
     REASON_FORBIDDEN_EFFECT_OBSERVED,
     REASON_MALFORMED_INPUT,
     REASON_OWNERSHIP_COLLISION_DETECTED,
-    REASON_PROVEN_NATIVE_TRANSFER_MISMATCH,
+    REASON_PROVEN_NATIVE_TRANSFER_AMOUNT_MISMATCH,
     REASON_PROVEN_NATIVE_TRANSFER_MISSING,
     REASON_PROVEN_TRANSFER_AMOUNT_MISMATCH,
     REASON_PROVEN_TRANSFER_MISSING,
@@ -48,36 +50,58 @@ from .compare import (
 )
 from .schemas import (
     DEFAULT_SIMULATION_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+    EffectDiff,
+    EffectType,
+    FindingSeverity,
+    ObservedApproval,
     ObservedFinding,
+    ObservedNativeTransfer,
     ObservedStorageDiff,
     ObservedTokenTransfer,
+    ScenarioConfig,
+    SimulationMode,
     SimulationResult,
     SimulationSchemaError,
+    TraceFinding,
+    WatchedAllowance,
+    WatchedStorage,
     load_simulation_result_from_dict,
     load_simulation_result_from_json,
     validate_simulation_result_dict,
 )
 
 __all__ = [
+    "__version__",
     "BaseClaim",
     "ClaimsValidationError",
     "ClaimType",
     "ComparisonResult",
+    "EffectDiff",
+    "EffectType",
     "EvidenceReference",
+    "FindingSeverity",
     "ForbiddenEffectClaim",
     "ForbiddenEffectType",
     "NativeTransferClaim",
+    "ObservedApproval",
     "ObservedFinding",
+    "ObservedNativeTransfer",
     "ObservedStorageDiff",
     "ObservedTokenTransfer",
     "OwnershipExpectationClaim",
     "OwnershipState",
     "ProposalClaims",
+    "ScenarioConfig",
+    "SimulationMode",
     "SimulationResult",
     "SimulationSchemaError",
     "TokenTransferClaim",
+    "TraceFinding",
     "Verdict",
     "VerdictEngineConfig",
+    "WatchedAllowance",
+    "WatchedStorage",
     "compare",
     "get_forbid_ownership_claims",
     "get_honest_5m_grant_claims",
@@ -88,6 +112,7 @@ __all__ = [
     "validate_claims_dict",
     "validate_simulation_result_dict",
     "DEFAULT_SIMULATION_SCHEMA_VERSION",
+    "SCHEMA_VERSION",
     "REASON_ALL_CLAIMS_VERIFIED",
     "REASON_CLAIMS_AMBIGUOUS",
     "REASON_CLAIMS_UNSUPPORTED_TYPE",
