@@ -1,0 +1,31 @@
+{
+  "schema_version": "veritas-simulation-v1.0",
+  "scenario_id": "scenario-incomplete-trace",
+  "chain_id": 31337,
+  "simulation_mode": "local_evm",
+  "success": true,
+  "trace_complete": false,
+  "state_diffs": [],
+  "logs": [
+    {
+      "log_index": 0,
+      "address": "0x4444444444444444444444444444444444444444",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x0000000000000000000000001111111111111111111111111111111111111111",
+        "0x0000000000000000000000003333333333333333333333333333333333333333"
+      ],
+      "data": "0x0000000000000000000000000000000000000000000000422ca8b0a00a425000",
+      "event_name": "Transfer",
+      "decoded": {
+        "from": "0x1111111111111111111111111111111111111111",
+        "to": "0x3333333333333333333333333333333333333333",
+        "value": "5000000000000000000000000"
+      }
+    }
+  ],
+  "findings": [],
+  "errors": [
+    "Tracer output buffer exceeded memory limit at step 420; trace truncated"
+  ]
+}

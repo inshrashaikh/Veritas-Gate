@@ -1,0 +1,35 @@
+{
+  "schema_version": "veritas-claims-v1.0",
+  "proposal_id": "prop-honest-5m-grant",
+  "title": "DAO Grant: 5,000,000 Token Ecosystem Distribution",
+  "description": "Transfers 5,000,000 tokens to recipient; strictly preserves Treasury ownership.",
+  "target_treasury": "0x1111111111111111111111111111111111111111",
+  "claims": [
+    {
+      "claim_id": "claim-001-grant-distribution",
+      "type": "TOKEN_TRANSFER",
+      "token": "0x4444444444444444444444444444444444444444",
+      "recipient": "0x3333333333333333333333333333333333333333",
+      "amount": "5000000000000000000000000",
+      "unit": "raw_tokens",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "description": "5,000,000 mock tokens transferred from Treasury to grant recipient"
+    },
+    {
+      "claim_id": "claim-002-ownership-preserved",
+      "type": "OWNERSHIP_EXPECTATION",
+      "contract": "0x1111111111111111111111111111111111111111",
+      "expected_state": "UNCHANGED",
+      "unit": "address",
+      "description": "Treasury owner address must remain unchanged"
+    },
+    {
+      "claim_id": "claim-003-forbid-ownership-hijack",
+      "type": "FORBIDDEN_EFFECT",
+      "effect_type": "OWNERSHIP_CHANGE",
+      "target": "0x1111111111111111111111111111111111111111",
+      "unit": "none",
+      "description": "Slot 0 ownership modification on Treasury is explicitly forbidden"
+    }
+  ]
+}

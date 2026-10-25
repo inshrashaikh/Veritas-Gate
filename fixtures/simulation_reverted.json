@@ -1,0 +1,14 @@
+{
+  "schema_version": "veritas-simulation-v1.0",
+  "scenario_id": "scenario-reverted-execution",
+  "chain_id": 31337,
+  "simulation_mode": "local_evm",
+  "success": false,
+  "trace_complete": true,
+  "state_diffs": [],
+  "logs": [],
+  "findings": [],
+  "errors": [
+    "Execution reverted with custom error: Unauthorized(0x0000000000000000000000003333333333333333333333333333333333333333)"
+  ]
+}

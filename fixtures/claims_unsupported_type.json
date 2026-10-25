@@ -1,0 +1,13 @@
+{
+  "schema_version": "veritas-claims-v1.0",
+  "proposal_id": "prop-unsupported-type",
+  "title": "Proposal with Unsupported Claim Type",
+  "claims": [
+    {
+      "claim_id": "claim-unsupported-1",
+      "type": "QUANTUM_TELEPORT_TOKENS",
+      "unit": "qubits",
+      "token": "0x4444444444444444444444444444444444444444"
+    }
+  ]
+}

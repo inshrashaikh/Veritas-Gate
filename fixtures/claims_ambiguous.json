@@ -1,0 +1,15 @@
+{
+  "schema_version": "veritas-claims-v1.0",
+  "proposal_id": "prop-ambiguous-claims",
+  "title": "Ambiguous Proposal with Invalid Units and Floating Amount",
+  "claims": [
+    {
+      "claim_id": "claim-ambiguous-1",
+      "type": "TOKEN_TRANSFER",
+      "token": "0x4444444444444444444444444444444444444444",
+      "recipient": "0x3333333333333333333333333333333333333333",
+      "amount": "5M to 10M",
+      "unit": ""
+    }
+  ]
+}

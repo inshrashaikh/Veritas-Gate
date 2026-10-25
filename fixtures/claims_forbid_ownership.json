@@ -1,0 +1,35 @@
+{
+  "schema_version": "veritas-claims-v1.0",
+  "proposal_id": "prop-forbid-ownership",
+  "title": "Grant Proposal with Explicit Ownership and Transfer Protection",
+  "description": "Enforces strict immutability of Treasury ownership and forbids unexpected transfers.",
+  "target_treasury": "0x1111111111111111111111111111111111111111",
+  "claims": [
+    {
+      "claim_id": "claim-grant-transfer",
+      "type": "TOKEN_TRANSFER",
+      "token": "0x4444444444444444444444444444444444444444",
+      "recipient": "0x3333333333333333333333333333333333333333",
+      "amount": "5000000000000000000000000",
+      "unit": "raw_tokens",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "description": "Authorize standard grant token transfer"
+    },
+    {
+      "claim_id": "claim-forbid-ownership-change",
+      "type": "FORBIDDEN_EFFECT",
+      "effect_type": "OWNERSHIP_CHANGE",
+      "target": "0x1111111111111111111111111111111111111111",
+      "unit": "none",
+      "description": "Explicitly forbids mutating Treasury ownership slot 0"
+    },
+    {
+      "claim_id": "claim-forbid-unapproved-transfers",
+      "type": "FORBIDDEN_EFFECT",
+      "effect_type": "UNAPPROVED_TRANSFER",
+      "target": "0x1111111111111111111111111111111111111111",
+      "unit": "none",
+      "description": "Explicitly forbids any transfer other than the authorized grant"
+    }
+  ]
+}

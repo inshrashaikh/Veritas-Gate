@@ -1,0 +1,6 @@
+{
+  "scenario_id": "scenario-missing-required-fields",
+  "chain_id": 31337,
+  "simulation_mode": "local_evm",
+  "success": true
+}
