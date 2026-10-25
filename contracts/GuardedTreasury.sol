@@ -101,6 +101,7 @@ contract GuardedTreasury {
     error GuardianAlreadyApproved();
     error TreasuryNotPaused();
     error TreasuryAlreadyPaused();
+    error EmptyHash();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert UnauthorizedCaller(msg.sender);
@@ -195,66 +196,8 @@ contract GuardedTreasury {
         uint256 value,
         bytes calldata data
     ) external payable whenNotPaused returns (bytes memory returnData) {
-        // 1. Replay Protection
-        if (executed[proposalId][version]) {
-            emit ExecutionRejected(proposalId, version, "Proposal already executed");
-            revert ProposalAlreadyExecuted(proposalId, version);
-        }
-
-        // 2. Voting / Authorization Check
-        if (!authorizedProposals[proposalId][version]) {
-            emit ExecutionRejected(proposalId, version, "Proposal not authorized by governance");
-            revert ProposalNotAuthorized(proposalId, version);
-        }
-
-        // 3. Target and Value Binding Checks
-        if (target != authorizedTargets[proposalId][version]) {
-            emit ExecutionRejected(proposalId, version, "Target address mismatch");
-            revert TargetMismatch(authorizedTargets[proposalId][version], target);
-        }
-        if (value != authorizedValues[proposalId][version]) {
-            emit ExecutionRejected(proposalId, version, "Value mismatch");
-            revert ValueMismatch(authorizedValues[proposalId][version], value);
-        }
-
-        // 4. Registry Hash Commitments Check
-        ProposalRegistry.ProposalVersion memory pv = proposalRegistry.getProposalVersion(proposalId, version);
-        bytes32 actualCalldataHash = keccak256(data);
-        if (actualCalldataHash != pv.calldataHash) {
-            emit ExecutionRejected(proposalId, version, "Calldata hash mismatch against proposal registry");
-            revert CalldataHashMismatch(pv.calldataHash, actualCalldataHash);
-        }
-
-        // 5. Oracle Commitments and Status Check
-        VerdictOracle.AutomatedVerdict memory verdict = verdictOracle.getVerdict(proposalId, version);
-        if (verdict.textHash != pv.textHash || verdict.calldataHash != pv.calldataHash) {
-            emit ExecutionRejected(proposalId, version, "Registry and oracle hash commitments do not match");
-            revert RegistryOracleCommitmentMismatch(proposalId, version);
-        }
-
-        // 6. Challenge Invariants
-        if (verdictOracle.hasActiveChallenge(proposalId, version)) {
-            emit ExecutionRejected(proposalId, version, "Active challenge pending resolution");
-            revert ActiveChallengePending();
-        }
-        if (verdictOracle.isDisqualified(proposalId, version)) {
-            emit ExecutionRejected(proposalId, version, "Proposal disqualified by challenge");
-            revert ProposalDisqualified();
-        }
-
-        // 7. Eligibility Verification
-        (bool eligible, string memory reason) = verdictOracle.isEligibleForExecution(proposalId, version);
-        if (!eligible) {
-            emit ExecutionRejected(proposalId, version, reason);
-            revert IneligibleVerdict(reason);
-        }
-
-        // 8. Challenge Window Elapsed Check
-        uint256 executableAt = verdict.timestamp + challengeWindow;
-        if (block.timestamp < executableAt) {
-            emit ExecutionRejected(proposalId, version, "Challenge window has not elapsed");
-            revert ChallengeWindowActive(executableAt, block.timestamp);
-        }
+        _validateAuthorizationAndCommitments(proposalId, version, target, value, data);
+        _validateOracleAndWindow(proposalId, version);
 
         // Mark executed prior to external call (Checks-Effects-Interactions)
         executed[proposalId][version] = true;
@@ -277,6 +220,67 @@ contract GuardedTreasury {
         emit ProposalExecuted(proposalId, version, target, value, data, returnData);
     }
 
+    function _validateAuthorizationAndCommitments(
+        bytes32 proposalId,
+        uint256 version,
+        address target,
+        uint256 value,
+        bytes calldata data
+    ) internal view {
+        if (executed[proposalId][version]) {
+            revert ProposalAlreadyExecuted(proposalId, version);
+        }
+        if (!authorizedProposals[proposalId][version]) {
+            revert ProposalNotAuthorized(proposalId, version);
+        }
+        if (target != authorizedTargets[proposalId][version]) {
+            revert TargetMismatch(authorizedTargets[proposalId][version], target);
+        }
+        if (value != authorizedValues[proposalId][version]) {
+            revert ValueMismatch(authorizedValues[proposalId][version], value);
+        }
+
+        ProposalRegistry.ProposalVersion memory pv = proposalRegistry.getProposalVersion(proposalId, version);
+        bytes32 actualCalldataHash = keccak256(data);
+        if (actualCalldataHash != pv.calldataHash) {
+            revert CalldataHashMismatch(pv.calldataHash, actualCalldataHash);
+        }
+
+        VerdictOracle.AutomatedVerdict memory verdict = verdictOracle.getVerdict(proposalId, version);
+        if (verdict.textHash != pv.textHash || verdict.calldataHash != pv.calldataHash) {
+            revert RegistryOracleCommitmentMismatch(proposalId, version);
+        }
+    }
+
+    function _validateOracleAndWindow(
+        bytes32 proposalId,
+        uint256 version
+    ) internal view {
+        if (verdictOracle.hasActiveChallenge(proposalId, version)) {
+            revert ActiveChallengePending();
+        }
+        if (verdictOracle.isDisqualified(proposalId, version)) {
+            revert ProposalDisqualified();
+        }
+
+        (bool eligible, string memory reason) = verdictOracle.isEligibleForExecution(proposalId, version);
+        if (!eligible) {
+            revert IneligibleVerdict(reason);
+        }
+
+        VerdictOracle.AutomatedVerdict memory verdict = verdictOracle.getVerdict(proposalId, version);
+        uint256 baseTimestamp = verdict.timestamp;
+        VerdictOracle.HumanReview memory review = verdictOracle.getLatestReview(proposalId, version);
+        if (verdict.status == VerdictOracle.AutomatedVerdictStatus.NEEDS_REVIEW && review.timestamp > baseTimestamp) {
+            baseTimestamp = review.timestamp;
+        }
+
+        uint256 executableAt = baseTimestamp + challengeWindow;
+        if (block.timestamp < executableAt) {
+            revert ChallengeWindowActive(executableAt, block.timestamp);
+        }
+    }
+
     // =========================================================================
     // 2-OF-3 GUARDIAN EMERGENCY MULTISIG
     // =========================================================================
@@ -287,6 +291,7 @@ contract GuardedTreasury {
      */
     function proposeEmergencyPause(bytes32 reasonHash) external onlyGuardian {
         if (isPaused) revert TreasuryAlreadyPaused();
+        if (reasonHash == bytes32(0)) revert EmptyHash();
         if (pauseApprovals[reasonHash][msg.sender]) revert GuardianAlreadyApproved();
 
         pauseApprovals[reasonHash][msg.sender] = true;
@@ -328,12 +333,19 @@ contract GuardedTreasury {
     }
 
     function _executeUnpause() internal {
+        bytes32 prevReason = pauseReasonHash;
         isPaused = false;
         pauseReasonHash = bytes32(0);
         unpauseApprovalCount = 0;
 
         for (uint256 i = 0; i < 3; i++) {
             unpauseApprovals[guardians[i]] = false;
+            if (prevReason != bytes32(0)) {
+                pauseApprovals[prevReason][guardians[i]] = false;
+            }
+        }
+        if (prevReason != bytes32(0)) {
+            pauseApprovalCounts[prevReason] = 0;
         }
 
         emit EmergencyUnpaused(msg.sender);

@@ -11,6 +11,7 @@ import logging
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from analyzer.schemas import (
@@ -24,6 +25,47 @@ from analyzer.schemas import (
 from analyzer.trace_rules import TraceAnalyzer
 
 logger = logging.getLogger("veritas.analyzer")
+
+
+def load_demo_simulation_fixture(scenario_id: str) -> Optional[Dict[str, Any]]:
+    """Loads a clearly labelled demo fixture when local Anvil node is unavailable.
+    
+    Ensures users are never misled: data_source is explicitly set to
+    'synthetic_demo_fixture' and is_demo is True.
+    """
+    fixtures_dir = Path(__file__).resolve().parent.parent / "fixtures"
+    sid = scenario_id.lower()
+
+    target_file = None
+    if "honest" in sid or "prop-001" in sid:
+        target_file = fixtures_dir / "simulation_honest.json"
+    elif "malicious" in sid or "prop-002" in sid or "hijack" in sid or "takeover" in sid:
+        target_file = fixtures_dir / "simulation_malicious.json"
+    elif "incomplete" in sid or "truncat" in sid:
+        target_file = fixtures_dir / "simulation_incomplete_trace.json"
+    elif "delegatecall" in sid:
+        target_file = fixtures_dir / "simulation_risky_delegatecall.json"
+    elif "revert" in sid:
+        target_file = fixtures_dir / "simulation_reverted.json"
+    elif "unexpected" in sid:
+        target_file = fixtures_dir / "simulation_unexpected_transfer.json"
+
+    if target_file and target_file.is_file():
+        try:
+            with open(target_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["scenario_id"] = scenario_id
+            data["is_demo"] = True
+            data["data_source"] = "synthetic_demo_fixture"
+            data["simulation_note"] = (
+                "[DEMO FIXTURE] Local Anvil node was offline. Showing labeled demonstration fixture. "
+                "NOT live on-chain execution."
+            )
+            return data
+        except Exception as e:
+            logger.warning("Failed to load demo fixture %s: %s", target_file, e)
+
+    return None
 
 
 class SimulationError(Exception):

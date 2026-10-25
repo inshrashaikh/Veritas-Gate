@@ -272,6 +272,7 @@ class TraceFinding:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "rule_id": self.rule_id,
+            "code": self.rule_id,
             "severity": self.severity,
             "title": self.title,
             "explanation": self.explanation,
@@ -332,17 +333,26 @@ class ObservedStorageDiff:
     address: str
     slot: str  # Normalized hex string e.g. "0x0" or "0x00...00"
     slot_index: Optional[int]
-    before: str
-    after: str
+    before: Optional[str]
+    after: Optional[str]
     slot_name: Optional[str] = None
+    effect_type: Optional[str] = None
+
+    @property
+    def is_incomplete(self) -> bool:
+        return self.before is None or self.after is None
 
     @property
     def has_mutated(self) -> bool:
+        if self.is_incomplete:
+            return False
         return self.before.strip().lower() != self.after.strip().lower()
 
     @property
     def after_as_address(self) -> Optional[str]:
         """Parses the lower 20 bytes of 'after' as an EVM address."""
+        if not self.after:
+            return None
         try:
             return address_from_hex32(self.after)
         except Exception:
@@ -455,7 +465,9 @@ class SimulationResult:
                 try:
                     from_addr = address_from_hex32(str(topics[1]))
                     to_addr = address_from_hex32(str(topics[2]))
-                    raw_data = log.get("data", "0x0")
+                    raw_data = log.get("data")
+                    if raw_data is None:
+                        continue
                     if isinstance(raw_data, str) and raw_data.startswith("0x"):
                         val = int(raw_data, 16) if len(raw_data) > 2 else 0
                     elif isinstance(raw_data, int):
@@ -553,9 +565,14 @@ class SimulationResult:
             for idx, item in enumerate(raw_native):
                 if isinstance(item, dict):
                     try:
-                        from_addr = normalize_address(item.get("from", "0x0000000000000000000000000000000000000000"))
-                        to_addr = normalize_address(item.get("to", "0x0000000000000000000000000000000000000000"))
-                        amount = int(item.get("value", item.get("amount", 0)))
+                        from_raw = item.get("from")
+                        to_raw = item.get("to")
+                        val_raw = item.get("value") if "value" in item else item.get("amount")
+                        if from_raw is None or to_raw is None or val_raw is None:
+                            continue
+                        from_addr = normalize_address(from_raw)
+                        to_addr = normalize_address(to_raw)
+                        amount = int(val_raw)
                         native_list.append(
                             ObservedNativeTransfer(
                                 from_address=from_addr,
@@ -630,12 +647,48 @@ def parse_state_diff_item(item: Dict[str, Any], idx: int) -> ObservedStorageDiff
         raise SimulationSchemaError(f"State diff at index {idx} missing required field 'address'")
 
     addr = normalize_address(item["address"], f"state_diff[{idx}].address")
-    raw_slot = item.get("slot", "0x0")
-    norm_slot, slot_idx = parse_slot_index(raw_slot)
+    effect_type = item.get("effect_type")
 
-    before = str(item.get("before", item.get("before_value", "0x0"))).strip()
-    after = str(item.get("after", item.get("after_value", "0x0"))).strip()
-    slot_name = item.get("slot_name", item.get("slot_key"))
+    if effect_type == EffectType.TREASURY_OWNER.value or effect_type == "treasury_owner":
+        norm_slot = "0x0"
+        slot_idx = 0
+        slot_name = "owner"
+    elif effect_type == EffectType.STORAGE_SLOT.value or effect_type == "storage_slot":
+        raw_slot = item.get("slot")
+        if not raw_slot and "effect_id" in item:
+            parts = str(item["effect_id"]).split(":")
+            if len(parts) >= 3:
+                raw_slot = parts[2]
+        if not raw_slot:
+            raw_slot = "0x0"
+        norm_slot, slot_idx = parse_slot_index(raw_slot)
+        slot_name = item.get("slot_name", item.get("slot_key"))
+    elif effect_type in (
+        EffectType.TOKEN_BALANCE.value,
+        EffectType.NATIVE_BALANCE.value,
+        EffectType.ALLOWANCE.value,
+        "token_balance",
+        "native_balance",
+        "allowance",
+    ):
+        norm_slot = f"effect:{effect_type}"
+        slot_idx = None
+        slot_name = str(effect_type)
+    else:
+        raw_slot = item.get("slot")
+        if raw_slot is not None:
+            norm_slot, slot_idx = parse_slot_index(raw_slot)
+        else:
+            norm_slot = "0x0"
+            slot_idx = 0
+        slot_name = item.get("slot_name", item.get("slot_key"))
+
+    raw_before = item.get("before") if "before" in item else item.get("before_value")
+    raw_after = item.get("after") if "after" in item else item.get("after_value")
+
+    before = str(raw_before).strip() if raw_before is not None else None
+    after = str(raw_after).strip() if raw_after is not None else None
+
     if slot_name is not None and not isinstance(slot_name, str):
         slot_name = str(slot_name)
 
@@ -646,6 +699,7 @@ def parse_state_diff_item(item: Dict[str, Any], idx: int) -> ObservedStorageDiff
         before=before,
         after=after,
         slot_name=slot_name,
+        effect_type=effect_type,
     )
 
 

@@ -275,4 +275,31 @@ contract Step1Test is Test {
         vm.expectRevert(abi.encodeWithSelector(Treasury.Unauthorized.selector, unprivilegedUser));
         treasury.executeDelegateCall(address(honestPayload), data);
     }
+
+    function test_ZeroAddressTarget_CallReverts() public {
+        vm.prank(treasuryOwner);
+        vm.expectRevert(Treasury.TargetZeroAddress.selector);
+        treasury.executeCall(address(0), 0, "");
+    }
+
+    function test_ZeroAddressTarget_DelegateCallReverts() public {
+        vm.prank(treasuryOwner);
+        vm.expectRevert(Treasury.TargetZeroAddress.selector);
+        treasury.executeDelegateCall(address(0), "");
+    }
+
+    function test_ReceiveEther_And_ExecuteCallWithValue() public {
+        address payable ethRecipient = payable(makeAddr("ethRecipient"));
+        uint256 sendValue = 2 ether;
+
+        // Fund treasury with ETH
+        vm.deal(address(treasury), 5 ether);
+        assertEq(address(treasury).balance, 5 ether);
+
+        vm.prank(treasuryOwner);
+        treasury.executeCall(ethRecipient, sendValue, "");
+
+        assertEq(ethRecipient.balance, sendValue);
+        assertEq(address(treasury).balance, 3 ether);
+    }
 }

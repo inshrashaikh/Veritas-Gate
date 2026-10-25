@@ -149,6 +149,31 @@ contract ProposalRegistry {
     }
 
     /**
+     * @notice Retrieves latest version details for a proposal.
+     */
+    function getLatestProposalVersion(
+        bytes32 proposalId
+    ) external view returns (ProposalVersion memory) {
+        uint256 currentVer = latestVersion[proposalId];
+        if (currentVer == 0) revert ProposalDoesNotExist(proposalId);
+        return _proposalVersions[proposalId][currentVer];
+    }
+
+    /**
+     * @notice Verifies if supplied hashes match a specific version of a proposal.
+     */
+    function verifyVersionHashes(
+        bytes32 proposalId,
+        uint256 version,
+        bytes32 expectedTextHash,
+        bytes32 expectedCalldataHash
+    ) external view returns (bool isValid) {
+        if (version == 0 || version > latestVersion[proposalId]) return false;
+        ProposalVersion storage v = _proposalVersions[proposalId][version];
+        return (v.textHash == expectedTextHash && v.calldataHash == expectedCalldataHash);
+    }
+
+    /**
      * @notice Verifies if supplied hashes match the latest version of a proposal.
      * @param proposalId Unique proposal identifier.
      * @param expectedTextHash Expected text hash commitment.

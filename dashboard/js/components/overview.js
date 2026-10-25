@@ -4,6 +4,7 @@
  * Overview metrics cards, verdict distribution, treasury impact, and latest audit events.
  */
 
+import { CONFIG } from '../config.js';
 import { escapeHTML, formatTokenAmount } from '../security.js';
 
 export function renderOverview(state) {
@@ -27,7 +28,7 @@ export function renderOverview(state) {
             <p>${escapeHTML(error)}</p>
             <p class="text-muted">
               Veritas Gate is operating with fail-closed discipline. No fake data is substituted.
-              You can start the backend service at <code>http://localhost:8000/api/v1</code>, or explore the dashboard with our test harness fixtures by enabling <strong>Demo Mode</strong>.
+              You can start the backend service at <code>${escapeHTML(CONFIG.API_BASE_URL)}</code>, or explore the dashboard with our test harness fixtures by enabling <strong>Demo Mode</strong>.
             </p>
             <div class="alert-actions">
               <button class="btn btn-sm btn-primary" onclick="document.getElementById('toggle-demo-btn').click()">
@@ -67,7 +68,7 @@ export function renderOverview(state) {
           </div>
           <div class="alert-body">
             <h3>No Metrics Available</h3>
-            <p>Veritas Gate API at <code>http://127.0.0.1:5000</code> is online, but no metrics are returned.</p>
+            <p>Veritas Gate API at <code>${escapeHTML(CONFIG.API_BASE_URL)}</code> is online, but no metrics are returned.</p>
             <div class="alert-actions" style="margin-top: 12px;">
               <button class="btn btn-sm btn-primary" onclick="document.getElementById('toggle-demo-btn').click()">
                 Enable Demo Mode (Labeled Fixtures)

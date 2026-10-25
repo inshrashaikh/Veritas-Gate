@@ -205,11 +205,18 @@ class ReviewQueue:
 
         item = self._items[key]
 
-        # 4. Validate state transition
+        # 4. Validate state transition & verdict eligibility
         current_state = ReviewState(item.state)
         if current_state in (ReviewState.APPROVED, ReviewState.REJECTED):
             raise InvalidStateTransitionError(
                 f"Cannot review proposal in terminal state {current_state.value}"
+            )
+
+        # MISMATCH cannot be overturned with APPROVE (invariant matching VerdictOracle.sol)
+        verdict_status = str(item.automated_verdict.get("status", "")).upper()
+        if verdict_status == "MISMATCH" and decision == ReviewDecision.APPROVE:
+            raise InvalidStateTransitionError(
+                "MISMATCH automated verdict indicates proven divergence; cannot be APPROVED"
             )
 
         # 5. Determine new state
@@ -261,6 +268,39 @@ class ReviewQueue:
             upper_filter = state_filter.upper()
             return [it for it in items if it.state == upper_filter]
         return items
+
+    def get_summary(self) -> Dict[str, int]:
+        """Returns count of review queue items categorized by state."""
+        summary = {
+            "total": len(self._items),
+            "pending": 0,
+            "approved": 0,
+            "rejected": 0,
+            "escalated": 0,
+        }
+        for it in self._items.values():
+            s = it.state.lower()
+            if s in summary:
+                summary[s] += 1
+        return summary
+
+    def update_on_chain_confirmation(
+        self,
+        proposal_id: str,
+        version: int,
+        tx_hash: str,
+        confirmed: bool,
+    ) -> bool:
+        """Updates on-chain transaction confirmation status for latest review."""
+        item = self.get(proposal_id, version)
+        if not item or not item.reviews:
+            return False
+        latest_rev = item.reviews[-1]
+        latest_rev.tx_hash = tx_hash
+        latest_rev.on_chain_confirmed = confirmed
+        item.updated_at = time.time()
+        self._persist()
+        return True
 
     def _validate_address(self, addr: str) -> str:
         if not isinstance(addr, str) or not re.match(r"^0x[0-9a-fA-F]{40}$", addr):

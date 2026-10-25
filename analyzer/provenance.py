@@ -28,6 +28,9 @@ class TamperedContentError(ProvenanceError):
     """Raised when supplied content hash does not match expected cryptographic hash."""
 
 
+GENESIS_MANIFEST_HASH = "0x" + "0" * 64
+
+
 @dataclass
 class EvidenceItem:
     item_id: str
@@ -38,6 +41,8 @@ class EvidenceItem:
     content_hash: str
     retrieval_timestamp: float
     integrity_verified: bool = False
+    previous_manifest_hash: str = GENESIS_MANIFEST_HASH
+    manifest_hash: str = ""
     disclaimer: str = (
         "Cryptographic content integrity validates byte fidelity to source; "
         "it does NOT verify the factual truth of claims made within the source text."
@@ -67,7 +72,7 @@ class EvidenceProvenance:
         content: Optional[bytes] = None,
         expected_hash: Optional[str] = None,
     ) -> EvidenceItem:
-        """Registers an evidence item and verifies hash integrity if content is provided."""
+        """Registers an evidence item, computes SHA-256 hash chaining, and verifies integrity."""
         if not proposal_id or not isinstance(proposal_id, str):
             raise ValueError("proposal_id must be a non-empty string")
         if not isinstance(version, int) or version <= 0:
@@ -95,6 +100,17 @@ class EvidenceProvenance:
         else:
             raise ValueError("Must provide either content bytes or expected_hash")
 
+        key = f"{proposal_id}:{version}"
+        if key not in self._manifests:
+            self._manifests[key] = []
+
+        existing_items = self._manifests[key]
+        prev_hash = existing_items[-1].manifest_hash if existing_items else GENESIS_MANIFEST_HASH
+
+        # SHA-256 Hash Chaining: binds previous manifest hash, item ID, content hash, media type, and version
+        chain_input = f"{prev_hash}:{item_id}:{computed_hash}:{media_type}:{source_uri}:{version}"
+        manifest_hash = "0x" + hashlib.sha256(chain_input.encode("utf-8")).hexdigest()
+
         item = EvidenceItem(
             item_id=item_id,
             proposal_id=proposal_id,
@@ -104,23 +120,22 @@ class EvidenceProvenance:
             content_hash=computed_hash,
             retrieval_timestamp=time.time(),
             integrity_verified=integrity_verified,
+            previous_manifest_hash=prev_hash,
+            manifest_hash=manifest_hash,
         )
 
-        key = f"{proposal_id}:{version}"
-        if key not in self._manifests:
-            self._manifests[key] = []
-
-        # Avoid duplicate item_id in same version
+        # Avoid duplicate item_id in same version while maintaining chain order
         self._manifests[key] = [it for it in self._manifests[key] if it.item_id != item_id]
         self._manifests[key].append(item)
 
         self._persist()
         logger.info(
-            "Registered evidence item %s for proposal %s v%d (verified=%s)",
+            "Registered chained evidence item %s for proposal %s v%d (verified=%s, manifest_hash=%s)",
             item_id,
             proposal_id,
             version,
             integrity_verified,
+            manifest_hash[:10] + "...",
         )
         return item
 
@@ -128,6 +143,58 @@ class EvidenceProvenance:
         """Retrieves all evidence items for a proposal version."""
         key = f"{proposal_id}:{version}"
         return list(self._manifests.get(key, []))
+
+    def get_manifest_root(self, proposal_id: str, version: int) -> Optional[str]:
+        """Returns the cumulative SHA-256 chained root hash of the manifest."""
+        items = self.get_manifest(proposal_id, version)
+        if not items:
+            return None
+        return items[-1].manifest_hash
+
+    def verify_chain(self, proposal_id: str, version: int) -> tuple[bool, Optional[str]]:
+        """Verifies cryptographic hash chain integrity across all evidence items in sequence."""
+        items = self.get_manifest(proposal_id, version)
+        if not items:
+            return True, None
+
+        expected_prev = GENESIS_MANIFEST_HASH
+        for idx, it in enumerate(items):
+            if it.previous_manifest_hash != expected_prev:
+                return (
+                    False,
+                    f"Broken chain link at index {idx} ({it.item_id}): expected prev {expected_prev}, got {it.previous_manifest_hash}",
+                )
+
+            chain_input = f"{expected_prev}:{it.item_id}:{it.content_hash}:{it.media_type}:{it.source_uri}:{it.version}"
+            expected_hash = "0x" + hashlib.sha256(chain_input.encode("utf-8")).hexdigest()
+            if it.manifest_hash != expected_hash:
+                return (
+                    False,
+                    f"Invalid manifest hash at index {idx} ({it.item_id}): expected {expected_hash}, got {it.manifest_hash}",
+                )
+
+            expected_prev = it.manifest_hash
+
+        return True, None
+
+    def get_manifest_summary(self, proposal_id: str, version: int) -> Dict[str, Any]:
+        """Returns complete manifest summary with chain verification status and disclaimer."""
+        items = self.get_manifest(proposal_id, version)
+        chain_valid, chain_err = self.verify_chain(proposal_id, version)
+        root_hash = self.get_manifest_root(proposal_id, version)
+        return {
+            "proposal_id": proposal_id,
+            "version": version,
+            "root_hash": root_hash,
+            "chain_verified": chain_valid,
+            "chain_error": chain_err,
+            "item_count": len(items),
+            "items": [it.to_dict() for it in items],
+            "disclaimer": (
+                "Cryptographic content integrity validates byte fidelity to source and hash chain continuity; "
+                "it does NOT verify the factual truth of claims made within the source text."
+            ),
+        }
 
     def _persist(self) -> None:
         if not self.storage_path:
@@ -173,6 +240,8 @@ class EvidenceProvenance:
                         content_hash=it["content_hash"],
                         retrieval_timestamp=it["retrieval_timestamp"],
                         integrity_verified=it.get("integrity_verified", False),
+                        previous_manifest_hash=it.get("previous_manifest_hash", GENESIS_MANIFEST_HASH),
+                        manifest_hash=it.get("manifest_hash", ""),
                     )
                     for it in items
                 ]

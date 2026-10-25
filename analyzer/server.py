@@ -30,8 +30,12 @@ from analyzer.review_queue import (
     ReviewQueueError,
     UnauthorizedReviewerError,
 )
-from analyzer.schemas import ScenarioConfig, SimulationResult
-from analyzer.simulate import Simulator
+from analyzer.schemas import (
+    ScenarioConfig,
+    SimulationResult,
+    load_simulation_result_from_dict,
+)
+from analyzer.simulate import Simulator, load_demo_simulation_fixture
 
 logger = logging.getLogger("veritas.server")
 
@@ -272,11 +276,15 @@ def create_app(
     def get_proposal(proposal_id: str):
         if proposal_id in proposals_db:
             prop = proposals_db[proposal_id]
+            latest_v = prop.get("latest_version", 1)
+            manifest_summary = provenance.get_manifest_summary(proposal_id, latest_v)
             return jsonify({
                 "proposal_id": prop["proposal_id"],
                 "latest_version": prop["latest_version"],
                 "versions": prop["versions"],
+                "evidence_manifest": manifest_summary,
                 "is_demo": False,
+                "data_source": "local_proposals_db",
             }), 200
 
         # Fallback to seeded demo proposals if unindexed or in demo mode
@@ -285,6 +293,7 @@ def create_app(
                 p_copy = dict(p)
                 p_copy["is_demo"] = True
                 p_copy["data_source"] = "seeded_demo_fixture"
+                p_copy["evidence_manifest"] = provenance.get_manifest_summary(proposal_id, 1)
                 return jsonify(p_copy), 200
 
         return jsonify({"error": f"Proposal '{proposal_id}' not found"}), 404
@@ -300,42 +309,120 @@ def create_app(
         except ValueError as ve:
             return jsonify({"error": "Scenario validation failed", "detail": str(ve)}), 400
 
-        # Execute deterministic EVM simulation
+        sim_result: Optional[SimulationResult] = None
+        is_demo_fixture = False
+        demo_note = None
+
+        # Execute deterministic EVM simulation against local node
         try:
             simulator = Simulator(scenario_cfg)
-            sim_result: SimulationResult = simulator.run()
+            sim_result = simulator.run()
         except Exception as e:
             logger.error("Simulation execution error: %s", e)
             return jsonify({"error": "Simulation execution failed", "detail": str(e)}), 500
 
+        # If Anvil node was unreachable, fall back to clearly labelled demo fixture if demo mode is enabled
+        if not sim_result.success and any("failed to connect" in err.lower() for err in sim_result.errors):
+            if app.config.get("DEMO_MODE", True):
+                fixture_data = load_demo_simulation_fixture(scenario_cfg.scenario_id)
+                if fixture_data:
+                    is_demo_fixture = True
+                    demo_note = (
+                        "[DEMO FIXTURE] Local Anvil node was offline. Showing labeled demonstration fixture. "
+                        "NOT live on-chain execution."
+                    )
+                    try:
+                        sim_result = load_simulation_result_from_dict(fixture_data)
+                    except Exception as load_err:
+                        logger.warning("Failed to parse fallback demo fixture: %s", load_err)
+
         # Compute deterministic governance verdict based on observable evidence
-        verdict_status = "VERIFIED"
-        reason = "All state diffs and trace invariants verified clean."
+        # 1. Check for Treasury ownership hijack (direct storage collision)
+        has_owner_hijack = any(
+            (
+                (isinstance(d, dict) and d.get("effect_type") == "treasury_owner" and d.get("before_value") != d.get("after_value"))
+                or (isinstance(d, dict) and "owner" in str(d.get("effect_id", "")).lower() and d.get("before_value") != d.get("after_value"))
+                or (hasattr(d, "effect_type") and getattr(d, "effect_type") == "treasury_owner" and getattr(d, "before_value") != getattr(d, "after_value"))
+            )
+            for d in sim_result.state_diffs
+        )
 
-        if not sim_result.success:
+        # 2. Check for missing/incomplete trace evidence (FAIL CLOSED: NEVER TREAT INCOMPLETE TRACE AS SAFE)
+        has_inconclusive_trace = (
+            not sim_result.trace_complete
+            or any(
+                (isinstance(f, dict) and (f.get("rule_id") == "R000_INCONCLUSIVE_TRACE" or f.get("code") == "R000_INCONCLUSIVE_TRACE"))
+                or (hasattr(f, "rule_id") and getattr(f, "rule_id") == "R000_INCONCLUSIVE_TRACE")
+                for f in sim_result.findings
+            )
+        )
+
+        # 3. Check for high-risk findings (DELEGATECALL, SELFDESTRUCT, Proxy Upgrades, Unlimited Approvals)
+        finding_codes = set()
+        for f in sim_result.findings:
+            if isinstance(f, dict):
+                code = f.get("rule_id") or f.get("code")
+                if code:
+                    finding_codes.add(str(code).upper())
+            elif hasattr(f, "rule_id"):
+                finding_codes.add(str(getattr(f, "rule_id")).upper())
+            elif hasattr(f, "code"):
+                finding_codes.add(str(getattr(f, "code")).upper())
+
+        has_delegatecall = any("DELEGATECALL" in c or "R001" in c for c in finding_codes)
+        has_selfdestruct = any("SELFDESTRUCT" in c or "R002" in c for c in finding_codes)
+        has_proxy = any("PROXY" in c or "R003" in c for c in finding_codes)
+        has_unlimited = any("UNLIMITED" in c or "APPROVAL" in c or "R004" in c for c in finding_codes)
+
+        if has_owner_hijack:
             verdict_status = "MISMATCH"
-            reason = f"Execution failed or reverted: {sim_result.errors}"
+            reason = "Treasury ownership hijacked under execution"
+        elif not sim_result.success:
+            verdict_status = "MISMATCH"
+            reason = f"Execution failed or reverted: {'; '.join(sim_result.errors)}"
+        elif has_inconclusive_trace:
+            verdict_status = "NEEDS_REVIEW"
+            reason = "Trace evidence incomplete or unavailable; fail-closed safety discipline requires human review"
+        elif has_delegatecall or has_selfdestruct or has_proxy or has_unlimited:
+            verdict_status = "NEEDS_REVIEW"
+            reasons = []
+            if has_delegatecall:
+                reasons.append("DELEGATECALL execution detected (R001)")
+            if has_selfdestruct:
+                reasons.append("SELFDESTRUCT instruction detected (R002)")
+            if has_proxy:
+                reasons.append("Proxy implementation modified (R003)")
+            if has_unlimited:
+                reasons.append("Unlimited token approval granted (R004)")
+            reason = "; ".join(reasons)
         else:
-            # Check for high-risk findings (DELEGATECALL, SELFDESTRUCT, Proxy Upgrades, Unlimited Approvals)
-            has_delegatecall = any(f["rule_id"] == "R001_DELEGATECALL" for f in sim_result.findings)
-            has_selfdestruct = any(f["rule_id"] == "R002_SELFDESTRUCT" for f in sim_result.findings)
-            has_proxy = any(f["rule_id"] == "R003_PROXY_UPGRADE" for f in sim_result.findings)
-            has_unlimited = any(f["rule_id"] == "R004_UNLIMITED_APPROVAL" for f in sim_result.findings)
+            verdict_status = "VERIFIED"
+            reason = "All state diffs and trace invariants verified clean."
 
-            if has_delegatecall or has_selfdestruct or has_proxy or has_unlimited:
-                verdict_status = "NEEDS_REVIEW"
-                reasons = []
-                if has_delegatecall:
-                    reasons.append("DELEGATECALL execution detected")
-                if has_selfdestruct:
-                    reasons.append("SELFDESTRUCT instruction detected")
-                if has_proxy:
-                    reasons.append("Proxy implementation modified")
-                if has_unlimited:
-                    reasons.append("Unlimited token approval granted")
-                reason = "; ".join(reasons)
+        sim_dict = sim_result.to_dict()
+        sim_dict["is_demo"] = is_demo_fixture
+        sim_dict["data_source"] = "synthetic_demo_fixture" if is_demo_fixture else "local_anvil_node"
+        if is_demo_fixture:
+            sim_dict["simulation_note"] = demo_note
 
-        evidence_hash = "0x" + hashlib.sha256(json.dumps(sim_result.to_dict(), sort_keys=True).encode("utf-8")).hexdigest()
+        evidence_bytes = json.dumps(sim_dict, sort_keys=True).encode("utf-8")
+        evidence_hash = "0x" + hashlib.sha256(evidence_bytes).hexdigest()
+
+        # Register simulation evidence into provenance with SHA-256 hash chaining
+        try:
+            provenance.register_evidence(
+                proposal_id=scenario_cfg.scenario_id,
+                version=1,
+                item_id="simulation_evidence",
+                media_type="application/json",
+                source_uri=f"analyzer://simulation/{scenario_cfg.scenario_id}",
+                content=evidence_bytes,
+                expected_hash=evidence_hash,
+            )
+        except Exception as prov_err:
+            logger.debug("Provenance chain notice: %s", prov_err)
+
+        manifest_summary = provenance.get_manifest_summary(scenario_cfg.scenario_id, 1)
 
         # If verdict is NEEDS_REVIEW, automatically queue it for human review
         if verdict_status == "NEEDS_REVIEW":
@@ -346,26 +433,108 @@ def create_app(
                     "status": verdict_status,
                     "reason": reason,
                     "evidence_hash": evidence_hash,
+                    "manifest_root_hash": manifest_summary.get("root_hash"),
                     "trace_complete": sim_result.trace_complete,
+                    "is_demo": is_demo_fixture,
                     "timestamp": time.time(),
                 },
             )
 
+        verdict_obj = {
+            "status": verdict_status,
+            "reason": reason,
+            "evidence_hash": evidence_hash,
+            "manifest_root_hash": manifest_summary.get("root_hash"),
+            "trace_complete": sim_result.trace_complete,
+            "is_demo": is_demo_fixture,
+            "data_source": "synthetic_demo_fixture" if is_demo_fixture else "local_anvil_node",
+        }
+        if is_demo_fixture:
+            verdict_obj["note"] = demo_note
+
         return jsonify({
-            "simulation": sim_result.to_dict(),
-            "verdict": {
-                "status": verdict_status,
-                "reason": reason,
-                "evidence_hash": evidence_hash,
-                "trace_complete": sim_result.trace_complete,
-            },
+            "simulation": sim_dict,
+            "verdict": verdict_obj,
+            "evidence_manifest": manifest_summary,
         }), 200
+
+    @app.route("/manifest/<proposal_id>", methods=["GET"])
+    @app.route("/manifest/<proposal_id>/<int:version>", methods=["GET"])
+    @app.route("/proposals/<proposal_id>/manifest", methods=["GET"])
+    def get_evidence_manifest(proposal_id: str, version: Optional[int] = None):
+        target_version = version
+        if target_version is None:
+            if proposal_id in proposals_db:
+                target_version = proposals_db[proposal_id].get("latest_version", 1)
+            else:
+                target_version = 1
+
+        summary = provenance.get_manifest_summary(proposal_id, target_version)
+        summary["is_demo"] = app.config.get("DEMO_MODE", True)
+        summary["data_source"] = "local_evidence_provenance"
+        return jsonify(summary), 200
+
+    @app.route("/manifest/<proposal_id>/<int:version>", methods=["POST"])
+    @app.route("/proposals/<proposal_id>/evidence", methods=["POST"])
+    def register_manifest_evidence(proposal_id: str, version: Optional[int] = None):
+        if not request.is_json:
+            return jsonify({"error": "Expected application/json content-type"}), 400
+
+        target_version = version
+        data = request.get_json()
+        if target_version is None:
+            target_version = int(data.get("version", 1))
+
+        item_id = data.get("item_id")
+        if not item_id or not isinstance(item_id, str):
+            return jsonify({"error": "'item_id' is required and must be a non-empty string"}), 400
+
+        media_type = data.get("media_type", "application/octet-stream")
+        source_uri = data.get("source_uri", f"local://evidence/{proposal_id}/{item_id}")
+        content_val = data.get("content")
+        content_bytes = content_val.encode("utf-8") if isinstance(content_val, str) else None
+        expected_hash = data.get("expected_hash")
+
+        try:
+            item = provenance.register_evidence(
+                proposal_id=proposal_id,
+                version=target_version,
+                item_id=item_id,
+                media_type=media_type,
+                source_uri=source_uri,
+                content=content_bytes,
+                expected_hash=expected_hash,
+            )
+            summary = provenance.get_manifest_summary(proposal_id, target_version)
+            return jsonify({
+                "message": "Evidence registered in manifest hash chain",
+                "item": item.to_dict(),
+                "manifest": summary,
+            }), 201
+        except TamperedContentError as tce:
+            return jsonify({"error": "Tampered content detected", "detail": str(tce)}), 400
+        except ValueError as ve:
+            return jsonify({"error": "Validation error", "detail": str(ve)}), 400
+        except Exception as e:
+            logger.error("Failed to register evidence artifact: %s", e)
+            return jsonify({"error": "Internal error", "detail": str(e)}), 500
 
     @app.route("/reviews", methods=["GET"])
     def list_reviews():
         status_filter = request.args.get("status")
         items = queue.list_items(status_filter)
-        return jsonify({"count": len(items), "items": [it.to_dict() for it in items]}), 200
+        return jsonify({
+            "count": len(items),
+            "summary": queue.get_summary(),
+            "items": [it.to_dict() for it in items],
+        }), 200
+
+    @app.route("/reviews/<proposal_id>/<int:version>", methods=["GET"])
+    def get_review_item(proposal_id: str, version: int):
+        item = queue.get(proposal_id, version)
+        if not item:
+            return jsonify({"error": f"No review item found for proposal {proposal_id} v{version}"}), 404
+        return jsonify(item.to_dict()), 200
 
     @app.route("/reviews/<proposal_id>/<int:version>", methods=["POST"])
     def post_review(proposal_id: str, version: int):
@@ -545,12 +714,62 @@ def create_app(
                     "timestamp": rev.timestamp,
                 })
 
+        # 3. Evidence Manifest events
+        max_ver = 1
+        if proposal_id in proposals_db:
+            max_ver = proposals_db[proposal_id].get("latest_version", 1)
+        for v in range(1, max_ver + 1):
+            manifest_items = provenance.get_manifest(proposal_id, v)
+            for m in manifest_items:
+                events.append({
+                    "event_type": "EVIDENCE_MANIFEST_REGISTERED",
+                    "version": v,
+                    "item_id": m.item_id,
+                    "content_hash": m.content_hash,
+                    "previous_manifest_hash": m.previous_manifest_hash,
+                    "manifest_hash": m.manifest_hash,
+                    "integrity_verified": m.integrity_verified,
+                    "timestamp": m.retrieval_timestamp,
+                })
+
         events.sort(key=lambda x: x.get("timestamp", 0))
 
         return jsonify({
             "proposal_id": proposal_id,
             "event_count": len(events),
             "timeline": events,
+        }), 200
+
+    @app.route("/onchain/<proposal_id>/<int:version>", methods=["GET"])
+    def get_onchain_status(proposal_id: str, version: int):
+        proposal_bytes32 = proposal_id.encode("utf-8").ljust(32, b"\x00")[:32]
+        is_connected = adapter.is_connected()
+        if not is_connected:
+            return jsonify({
+                "proposal_id": proposal_id,
+                "version": version,
+                "rpc_connected": False,
+                "note": "Local Anvil RPC offline or disconnected. On-chain queries unavailable.",
+            }), 200
+
+        on_chain_prop = adapter.get_on_chain_proposal(proposal_bytes32, version)
+        on_chain_verdict = adapter.get_on_chain_verdict(proposal_bytes32, version)
+        eligible, eligible_reason = adapter.is_on_chain_eligible(proposal_bytes32, version)
+        latest_review = adapter.get_on_chain_review(proposal_bytes32, version)
+        challenge_status = adapter.get_on_chain_challenge_status(proposal_bytes32, version)
+        treasury_status = adapter.get_treasury_status(proposal_bytes32, version)
+
+        return jsonify({
+            "proposal_id": proposal_id,
+            "version": version,
+            "rpc_connected": True,
+            "proposal": on_chain_prop,
+            "verdict": on_chain_verdict,
+            "eligible_for_execution": eligible,
+            "eligibility_reason": eligible_reason,
+            "latest_review": latest_review,
+            "challenges": challenge_status,
+            "treasury": treasury_status,
         }), 200
 
     return app

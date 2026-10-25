@@ -668,4 +668,264 @@ contract Phase4Test is Test {
         treasury.executeProposal(PROPOSAL_1, 1, address(mockToken), 0, transferCalldata);
         assertEq(mockToken.balanceOf(recipient), GRANT_AMOUNT);
     }
+
+    // =========================================================================
+    // 5. ADDITIONAL FOCUSED PHASE 4 TESTS
+    // =========================================================================
+
+    function test_ExecutionBlocked_ByTextHashCommitmentMismatch() public {
+        bytes memory transferCalldata = abi.encodeWithSelector(
+            mockToken.transfer.selector,
+            recipient,
+            GRANT_AMOUNT
+        );
+        bytes32 calldataHash = keccak256(transferCalldata);
+
+        // 1. Submit proposal with TEXT_HASH_1 to registry
+        address[] memory wallets = new address[](1);
+        wallets[0] = recipient;
+        vm.prank(governanceOwner);
+        registry.submitProposal(PROPOSAL_1, TEXT_HASH_1, calldataHash, wallets);
+
+        // 2. Post verdict to oracle with a DIFFERENT text hash (e.g. altered specification)
+        bytes32 alteredTextHash = keccak256("Altered specification text");
+        vm.prank(analyzer);
+        oracle.postVerdict(
+            PROPOSAL_1,
+            1,
+            VerdictOracle.AutomatedVerdictStatus.VERIFIED,
+            alteredTextHash,
+            calldataHash,
+            EVIDENCE_HASH_1,
+            true
+        );
+
+        // 3. Authorize proposal
+        vm.prank(governanceOwner);
+        treasury.authorizeProposal(PROPOSAL_1, 1, address(mockToken), 0);
+
+        vm.warp(block.timestamp + CHALLENGE_WINDOW + 1);
+
+        // Treasury rejects execution because oracle textHash != registry textHash
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GuardedTreasury.RegistryOracleCommitmentMismatch.selector,
+                PROPOSAL_1,
+                1
+            )
+        );
+        treasury.executeProposal(PROPOSAL_1, 1, address(mockToken), 0, transferCalldata);
+    }
+
+    function test_ExecutionBlocked_ByUnauthorizedProposal() public {
+        bytes memory transferCalldata = abi.encodeWithSelector(
+            mockToken.transfer.selector,
+            recipient,
+            GRANT_AMOUNT
+        );
+        bytes32 calldataHash = keccak256(transferCalldata);
+
+        address[] memory wallets = new address[](1);
+        wallets[0] = recipient;
+        vm.prank(governanceOwner);
+        registry.submitProposal(PROPOSAL_1, TEXT_HASH_1, calldataHash, wallets);
+
+        vm.prank(analyzer);
+        oracle.postVerdict(
+            PROPOSAL_1,
+            1,
+            VerdictOracle.AutomatedVerdictStatus.VERIFIED,
+            TEXT_HASH_1,
+            calldataHash,
+            EVIDENCE_HASH_1,
+            true
+        );
+
+        // DO NOT authorize proposal in GuardedTreasury
+        vm.warp(block.timestamp + CHALLENGE_WINDOW + 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GuardedTreasury.ProposalNotAuthorized.selector,
+                PROPOSAL_1,
+                1
+            )
+        );
+        treasury.executeProposal(PROPOSAL_1, 1, address(mockToken), 0, transferCalldata);
+    }
+
+    function test_ExecutionBlocked_ByTargetOrValueMismatch() public {
+        bytes memory transferCalldata = abi.encodeWithSelector(
+            mockToken.transfer.selector,
+            recipient,
+            GRANT_AMOUNT
+        );
+
+        _setupProposalAndVerdict(
+            address(mockToken),
+            transferCalldata,
+            VerdictOracle.AutomatedVerdictStatus.VERIFIED
+        );
+
+        vm.warp(block.timestamp + CHALLENGE_WINDOW + 1);
+
+        // Target mismatch
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GuardedTreasury.TargetMismatch.selector,
+                address(mockToken),
+                attacker
+            )
+        );
+        treasury.executeProposal(PROPOSAL_1, 1, attacker, 0, transferCalldata);
+
+        // Value mismatch
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GuardedTreasury.ValueMismatch.selector,
+                0,
+                1 ether
+            )
+        );
+        treasury.executeProposal{value: 1 ether}(PROPOSAL_1, 1, address(mockToken), 1 ether, transferCalldata);
+    }
+
+    function test_ExecutionBlocked_ByDisqualification() public {
+        bytes memory transferCalldata = abi.encodeWithSelector(
+            mockToken.transfer.selector,
+            recipient,
+            GRANT_AMOUNT
+        );
+
+        _setupProposalAndVerdict(
+            address(mockToken),
+            transferCalldata,
+            VerdictOracle.AutomatedVerdictStatus.VERIFIED
+        );
+
+        // Raise and uphold challenge as successful
+        vm.prank(challenger);
+        uint256 idx = oracle.raiseChallenge(PROPOSAL_1, 1, keccak256("Critical vulnerability found"));
+
+        vm.prank(governanceOwner);
+        oracle.resolveChallenge(PROPOSAL_1, 1, idx, true);
+
+        vm.warp(block.timestamp + CHALLENGE_WINDOW + 1);
+
+        vm.expectRevert(abi.encodeWithSelector(GuardedTreasury.ProposalDisqualified.selector));
+        treasury.executeProposal(PROPOSAL_1, 1, address(mockToken), 0, transferCalldata);
+    }
+
+    function test_ExecutionBlocked_ByVerifiedProposalEscalated() public {
+        bytes memory transferCalldata = abi.encodeWithSelector(
+            mockToken.transfer.selector,
+            recipient,
+            GRANT_AMOUNT
+        );
+
+        _setupProposalAndVerdict(
+            address(mockToken),
+            transferCalldata,
+            VerdictOracle.AutomatedVerdictStatus.VERIFIED
+        );
+
+        // Human reviewer escalates a VERIFIED proposal for additional scrutiny
+        vm.prank(reviewer1);
+        oracle.postReview(PROPOSAL_1, 1, VerdictOracle.ReviewDecision.ESCALATE, keccak256("Flagged for governance audit"));
+
+        vm.warp(block.timestamp + CHALLENGE_WINDOW + 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GuardedTreasury.IneligibleVerdict.selector,
+                "VERIFIED proposal escalated by human review override"
+            )
+        );
+        treasury.executeProposal(PROPOSAL_1, 1, address(mockToken), 0, transferCalldata);
+    }
+
+    function test_GuardianEmergencyPause_DifferentReasonHashesDoNotPause() public {
+        bytes32 reasonA = keccak256("Reason A: front-running");
+        bytes32 reasonB = keccak256("Reason B: oracle delay");
+
+        // Guardian A votes reason A
+        vm.prank(guardianA);
+        treasury.proposeEmergencyPause(reasonA);
+        assertFalse(treasury.isPaused());
+        assertEq(treasury.pauseApprovalCounts(reasonA), 1);
+
+        // Guardian B votes DIFFERENT reason B (does NOT reach 2 on either reason)
+        vm.prank(guardianB);
+        treasury.proposeEmergencyPause(reasonB);
+        assertFalse(treasury.isPaused());
+        assertEq(treasury.pauseApprovalCounts(reasonA), 1);
+        assertEq(treasury.pauseApprovalCounts(reasonB), 1);
+
+        // Guardian C confirms reason A (now reason A reaches 2-of-3 threshold -> PAUSED)
+        vm.prank(guardianC);
+        treasury.proposeEmergencyPause(reasonA);
+        assertTrue(treasury.isPaused());
+        assertEq(treasury.pauseReasonHash(), reasonA);
+    }
+
+    function test_GuardianEmergencyPause_RejectsEmptyReasonHash() public {
+        vm.prank(guardianA);
+        vm.expectRevert(abi.encodeWithSelector(GuardedTreasury.EmptyHash.selector));
+        treasury.proposeEmergencyPause(bytes32(0));
+    }
+
+    function test_ChallengeWindow_EnforcedFromHumanApprovalTime() public {
+        bytes memory transferCalldata = abi.encodeWithSelector(
+            mockToken.transfer.selector,
+            recipient,
+            GRANT_AMOUNT
+        );
+
+        _setupProposalAndVerdict(
+            address(mockToken),
+            transferCalldata,
+            VerdictOracle.AutomatedVerdictStatus.NEEDS_REVIEW
+        );
+
+        // Advance 5 days past initial automated verdict
+        vm.warp(block.timestamp + 5 days);
+
+        // Human review approves at day 5
+        vm.prank(reviewer1);
+        oracle.postReview(PROPOSAL_1, 1, VerdictOracle.ReviewDecision.APPROVE, keccak256("Approved at day 5"));
+
+        // Advance only 1 day from approval (less than 2-day challenge window)
+        vm.warp(block.timestamp + 1 days);
+
+        // Execution is blocked because challenge window has not elapsed since human approval
+        vm.expectRevert();
+        treasury.executeProposal(PROPOSAL_1, 1, address(mockToken), 0, transferCalldata);
+
+        // Advance 2 more days (3 days total since approval, exceeding 2-day window)
+        vm.warp(block.timestamp + 2 days);
+
+        // Execution succeeds
+        treasury.executeProposal(PROPOSAL_1, 1, address(mockToken), 0, transferCalldata);
+        assertEq(mockToken.balanceOf(recipient), GRANT_AMOUNT);
+    }
+
+    function test_ProposalRegistry_VersionQueryHelpers() public {
+        bytes32 calldataHash = keccak256("calldata-v1");
+        address[] memory wallets = new address[](1);
+        wallets[0] = recipient;
+
+        vm.prank(governanceOwner);
+        registry.submitProposal(PROPOSAL_1, TEXT_HASH_1, calldataHash, wallets);
+
+        // test getLatestProposalVersion
+        ProposalRegistry.ProposalVersion memory latest = registry.getLatestProposalVersion(PROPOSAL_1);
+        assertEq(latest.version, 1);
+        assertEq(latest.textHash, TEXT_HASH_1);
+        assertEq(latest.calldataHash, calldataHash);
+
+        // test verifyVersionHashes
+        assertTrue(registry.verifyVersionHashes(PROPOSAL_1, 1, TEXT_HASH_1, calldataHash));
+        assertFalse(registry.verifyVersionHashes(PROPOSAL_1, 1, keccak256("wrong"), calldataHash));
+        assertFalse(registry.verifyVersionHashes(PROPOSAL_1, 2, TEXT_HASH_1, calldataHash));
+    }
 }

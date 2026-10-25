@@ -116,6 +116,86 @@ class ContractAdapter:
         except Exception as e:
             return (False, f"RPC query failed: {e}")
 
+    def get_on_chain_review(self, proposal_id_bytes32: bytes, version: int) -> Optional[Dict[str, Any]]:
+        """Reads latest human review decision from VerdictOracle."""
+        if not self.oracle_address or not self.is_connected():
+            return None
+        contract = self.w3.eth.contract(address=self.oracle_address, abi=self.oracle_abi)
+        try:
+            r = contract.functions.getLatestReview(proposal_id_bytes32, version).call()
+            decision_map = {0: "NONE", 1: "APPROVE", 2: "REJECT", 3: "ESCALATE"}
+            return {
+                "reviewer": r[0],
+                "decision": decision_map.get(r[1], "UNKNOWN"),
+                "reason_hash": "0x" + r[2].hex(),
+                "timestamp": r[3],
+            }
+        except Exception as e:
+            logger.debug("Failed to read latest review from oracle: %s", e)
+            return None
+
+    def get_on_chain_challenge_status(self, proposal_id_bytes32: bytes, version: int) -> Dict[str, Any]:
+        """Reads active challenge and disqualification state from VerdictOracle."""
+        if not self.oracle_address or not self.is_connected():
+            return {"active_challenge": False, "disqualified": False, "connected": False}
+        contract = self.w3.eth.contract(address=self.oracle_address, abi=self.oracle_abi)
+        try:
+            active = contract.functions.hasActiveChallenge(proposal_id_bytes32, version).call()
+            disqualified = contract.functions.isDisqualified(proposal_id_bytes32, version).call()
+            return {"active_challenge": active, "disqualified": disqualified, "connected": True}
+        except Exception as e:
+            logger.debug("Failed to query challenge status: %s", e)
+            return {"active_challenge": False, "disqualified": False, "connected": False, "error": str(e)}
+
+    def get_treasury_status(
+        self,
+        proposal_id_bytes32: Optional[bytes] = None,
+        version: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Reads emergency pause state and execution status from GuardedTreasury."""
+        if not self.treasury_address or not self.is_connected():
+            return {"is_paused": False, "connected": False}
+        contract = self.w3.eth.contract(address=self.treasury_address, abi=self.treasury_abi)
+        try:
+            paused = contract.functions.isPaused().call()
+            reason_hash = contract.functions.pauseReasonHash().call()
+            challenge_window = contract.functions.challengeWindow().call()
+            result = {
+                "is_paused": paused,
+                "pause_reason_hash": "0x" + reason_hash.hex() if hasattr(reason_hash, "hex") else str(reason_hash),
+                "challenge_window": challenge_window,
+                "connected": True,
+            }
+            if proposal_id_bytes32 is not None and version is not None:
+                executed = contract.functions.executed(proposal_id_bytes32, version).call()
+                authorized = contract.functions.authorizedProposals(proposal_id_bytes32, version).call()
+                result["executed"] = executed
+                result["authorized"] = authorized
+            return result
+        except Exception as e:
+            logger.debug("Failed to query treasury status: %s", e)
+            return {"is_paused": False, "connected": False, "error": str(e)}
+
+    def verify_on_chain_hashes(
+        self,
+        proposal_id_bytes32: bytes,
+        expected_text_hash: bytes,
+        expected_calldata_hash: bytes,
+    ) -> Tuple[bool, int]:
+        """Verifies text and calldata hashes against ProposalRegistry on chain."""
+        if not self.registry_address or not self.is_connected():
+            return False, 0
+        contract = self.w3.eth.contract(address=self.registry_address, abi=self.registry_abi)
+        try:
+            return contract.functions.verifyLatestHashes(
+                proposal_id_bytes32,
+                expected_text_hash,
+                expected_calldata_hash,
+            ).call()
+        except Exception as e:
+            logger.debug("Failed to verify hashes on registry: %s", e)
+            return False, 0
+
     # =========================================================================
     # WRITE OPERATIONS (Operator-requested, local Anvil accounts only)
     # =========================================================================

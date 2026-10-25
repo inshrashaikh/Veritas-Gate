@@ -260,6 +260,15 @@ class App {
       });
     }
 
+    // Brand title click navigates to Overview
+    const brandGroup = document.querySelector('.brand-group');
+    if (brandGroup) {
+      brandGroup.style.cursor = 'pointer';
+      brandGroup.addEventListener('click', () => {
+        store.setActiveTab('overview');
+      });
+    }
+
     // Settings Modal
     const settingsBtn = document.getElementById('settings-btn');
     const modal = document.getElementById('settings-modal');
@@ -267,6 +276,14 @@ class App {
       settingsBtn.addEventListener('click', () => modal.classList.remove('hidden'));
       modal.querySelectorAll('.close-modal-btn').forEach(b => {
         b.addEventListener('click', () => modal.classList.add('hidden'));
+      });
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.classList.add('hidden');
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
+          modal.classList.add('hidden');
+        }
       });
     }
 

@@ -56,6 +56,7 @@ from .schemas import (
     SimulationSchemaError,
     load_simulation_result_from_dict,
     load_simulation_result_from_json,
+    parse_state_diff_item,
     validate_simulation_result_dict,
 )
 
@@ -145,12 +146,25 @@ class VerdictEngineConfig:
         default_factory=lambda: {
             "DELEGATECALL_DETECTED",
             "DELEGATECALL",
+            "R001_DELEGATECALL",
             "SELFDESTRUCT_DETECTED",
             "SELFDESTRUCT",
+            "R002_SELFDESTRUCT",
+            "PROXY_UPGRADE_DETECTED",
+            "PROXY_UPGRADE",
+            "R003_PROXY_UPGRADE",
+            "UNLIMITED_APPROVAL_DETECTED",
+            "UNLIMITED_APPROVAL",
+            "R004_UNLIMITED_APPROVAL",
+            "INCONCLUSIVE_TRACE",
+            "R000_INCONCLUSIVE_TRACE",
             "UNVERIFIED_TARGET",
             "DYNAMIC_DISPATCH",
             "ARBITRARY_CALL",
         }
+    )
+    risky_severities: Set[str] = field(
+        default_factory=lambda: {"CRITICAL", "HIGH"}
     )
     strict_unclaimed_transfers: bool = True
     strict_treasury_storage: bool = True
@@ -238,13 +252,13 @@ def compare(
 
         # Extract observed transfers and diffs from simulation (parsed or raw fallback)
         observed_transfers: List[ObservedTokenTransfer] = []
-        observed_diffs: List[ObservedStorageDiff] = []
+        raw_diffs: List[Any] = []
         observed_approvals: List[ObservedApproval] = []
         observed_native: List[ObservedNativeTransfer] = []
 
         if parsed_sim is not None:
             observed_transfers = parsed_sim.get_token_transfers()
-            observed_diffs = parsed_sim.state_diffs
+            raw_diffs = parsed_sim.state_diffs
             observed_approvals = parsed_sim.get_allowance_approvals()
             observed_native = parsed_sim.get_native_transfers()
         elif raw_sim_dict is not None:
@@ -262,19 +276,35 @@ def compare(
                     "errors": raw_sim_dict.get("errors", []),
                 })
                 observed_transfers = temp_sim.get_token_transfers()
-                observed_diffs = temp_sim.state_diffs
+                raw_diffs = temp_sim.state_diffs
                 observed_approvals = temp_sim.get_allowance_approvals()
                 observed_native = temp_sim.get_native_transfers()
             except Exception:
                 pass
 
+        # Normalize raw_diffs into ObservedStorageDiff items
+        observed_diffs: List[ObservedStorageDiff] = []
+        for idx, d in enumerate(raw_diffs):
+            if isinstance(d, ObservedStorageDiff):
+                observed_diffs.append(d)
+            elif isinstance(d, dict):
+                try:
+                    observed_diffs.append(parse_state_diff_item(d, idx))
+                except Exception:
+                    pass
+            elif hasattr(d, "to_dict"):
+                try:
+                    observed_diffs.append(parse_state_diff_item(d.to_dict(), idx))
+                except Exception:
+                    pass
+
         # 3.1 Check Ownership Expectations & Collisions
         for claim in parsed_claims.claims:
             if isinstance(claim, OwnershipExpectationClaim):
                 contract_diffs = [d for d in observed_diffs if d.address == claim.contract]
-                # Check slot 0 (ownership slot in Treasury)
+                # Check slot 0 (ownership slot in Treasury or treasury_owner effect)
                 for diff in contract_diffs:
-                    if diff.slot_index == 0 or diff.slot in ("0x0", "0x00") or diff.slot_name == "owner":
+                    if diff.slot_index == 0 or diff.slot in ("0x0", "0x00") or diff.slot_name == "owner" or diff.effect_type == "treasury_owner":
                         if diff.has_mutated:
                             if claim.expected_state == OwnershipState.UNCHANGED:
                                 return ComparisonResult(
@@ -326,7 +356,7 @@ def compare(
                 if claim.effect_type == ForbiddenEffectType.OWNERSHIP_CHANGE:
                     target_diffs = [d for d in observed_diffs if d.address == claim.target]
                     for diff in target_diffs:
-                        if (diff.slot_index == 0 or diff.slot in ("0x0", "0x00") or diff.slot_name == "owner") and diff.has_mutated:
+                        if (diff.slot_index == 0 or diff.slot in ("0x0", "0x00") or diff.slot_name == "owner" or diff.effect_type == "treasury_owner") and diff.has_mutated:
                             return ComparisonResult(
                                 verdict=Verdict.MISMATCH,
                                 reason_code=REASON_FORBIDDEN_EFFECT_OBSERVED,
@@ -372,7 +402,13 @@ def compare(
                                 ],
                             )
                 elif claim.effect_type == ForbiddenEffectType.ARBITRARY_STORAGE_WRITE:
-                    target_diffs = [d for d in observed_diffs if d.address == claim.target and d.has_mutated]
+                    target_diffs = [
+                        d for d in observed_diffs
+                        if d.address == claim.target
+                        and d.has_mutated
+                        and d.effect_type not in ("token_balance", "native_balance", "allowance")
+                        and not d.slot.startswith("effect:")
+                    ]
                     if target_diffs:
                         first_diff = target_diffs[0]
                         return ComparisonResult(
@@ -383,7 +419,7 @@ def compare(
                                 EvidenceReference(
                                     source="state_diff",
                                     identifier=f"{first_diff.address}:{first_diff.slot}",
-                                    details={"claim_id": claim.claim_id, "diff": asdict(first_diff)},
+                                    details={"claim_id": claim.claim_id, "diff": asdict(first_diff) if hasattr(first_diff, "__dataclass_fields__") else first_diff.__dict__},
                                 )
                             ],
                         )
@@ -592,7 +628,35 @@ def compare(
                             ],
                         )
 
-        # 3.5 Check for Unclaimed Treasury Storage Mutations
+        # 3.6 Check Forbidden Unapproved Transfers & Unclaimed Material Transfers
+        for claim in parsed_claims.claims:
+            if isinstance(claim, ForbiddenEffectClaim) and claim.effect_type == ForbiddenEffectType.UNAPPROVED_TRANSFER:
+                for t_idx, obs in enumerate(observed_transfers):
+                    if t_idx not in matched_transfer_indices:
+                        if obs.amount > 0 and (obs.from_address == claim.target or obs.token == claim.target):
+                            return ComparisonResult(
+                                verdict=Verdict.MISMATCH,
+                                reason_code=REASON_FORBIDDEN_EFFECT_OBSERVED,
+                                explanation=(
+                                    f"Forbidden unapproved transfer observed from target {claim.target}: "
+                                    f"{obs.amount} tokens ({obs.token}) to {obs.to_address} (Log #{obs.log_index})."
+                                ),
+                                evidence_references=[
+                                    EvidenceReference(
+                                        source="log",
+                                        identifier=f"log[{obs.log_index}]",
+                                        details={
+                                            "claim_id": claim.claim_id,
+                                            "token": obs.token,
+                                            "from": obs.from_address,
+                                            "to": obs.to_address,
+                                            "amount": str(obs.amount),
+                                        },
+                                    )
+                                ],
+                            )
+
+        # 3.7 Check for Unclaimed Treasury Storage Mutations
         if cfg.strict_treasury_storage and target_treasury:
             claimed_slots: Set[int] = set()
             for c in parsed_claims.claims:
@@ -601,6 +665,8 @@ def compare(
 
             for diff in observed_diffs:
                 if diff.address == target_treasury and diff.has_mutated:
+                    if diff.effect_type in ("token_balance", "native_balance", "allowance") or diff.slot.startswith("effect:"):
+                        continue
                     if diff.slot_index not in claimed_slots and diff.slot not in ("0x0", "0x00"):
                         return ComparisonResult(
                             verdict=Verdict.MISMATCH,
@@ -613,7 +679,7 @@ def compare(
                                 EvidenceReference(
                                     source="state_diff",
                                     identifier=f"{diff.address}:{diff.slot}",
-                                    details=asdict(diff),
+                                    details=asdict(diff) if hasattr(diff, "__dataclass_fields__") else diff.__dict__,
                                 )
                             ],
                         )
@@ -647,7 +713,35 @@ def compare(
     assert parsed_sim is not None
     assert parsed_claims is not None
 
-    # 4.3 Simulation execution failure (revert)
+    # 4.3 Incomplete state diff evidence for claimed/treasury contracts
+    for diff in observed_diffs:
+        if diff.is_incomplete:
+            is_relevant = (
+                (target_treasury and diff.address == target_treasury)
+                or any(
+                    getattr(c, "contract", None) == diff.address
+                    or getattr(c, "target", None) == diff.address
+                    for c in parsed_claims.claims
+                )
+            )
+            if is_relevant:
+                return ComparisonResult(
+                    verdict=Verdict.NEEDS_REVIEW,
+                    reason_code=REASON_REQUIRED_EVIDENCE_MISSING,
+                    explanation=(
+                        f"State diff for contract {diff.address} at slot {diff.slot} is incomplete "
+                        f"(missing before or after state data)."
+                    ),
+                    evidence_references=[
+                        EvidenceReference(
+                            source="state_diff",
+                            identifier=f"{diff.address}:{diff.slot}",
+                            details={"is_incomplete": True},
+                        )
+                    ],
+                )
+
+    # 4.4 Simulation execution failure (revert)
     if not parsed_sim.success:
         err_msg = "; ".join(parsed_sim.errors) if parsed_sim.errors else "Execution reverted"
         return ComparisonResult(
@@ -659,7 +753,7 @@ def compare(
             ],
         )
 
-    # 4.4 Simulation errors reported
+    # 4.5 Simulation errors reported
     if parsed_sim.errors:
         return ComparisonResult(
             verdict=Verdict.NEEDS_REVIEW,
@@ -670,7 +764,7 @@ def compare(
             ],
         )
 
-    # 4.5 Trace incomplete
+    # 4.6 Trace incomplete
     if not parsed_sim.trace_complete:
         return ComparisonResult(
             verdict=Verdict.NEEDS_REVIEW,
@@ -681,12 +775,31 @@ def compare(
             ],
         )
 
-    # 4.6 Configured risky trace flags (e.g. DELEGATECALL_DETECTED)
-    observed_finding_codes = parsed_sim.get_finding_codes()
-    risky_intersect = observed_finding_codes.intersection({c.upper() for c in cfg.risky_finding_codes})
-    if risky_intersect:
-        sorted_risky = sorted(risky_intersect)
-        finding_objs = [asdict(f) for f in parsed_sim.findings if f.code.upper() in risky_intersect]
+    # 4.7 Configured risky trace flags (e.g. DELEGATECALL_DETECTED, R001_DELEGATECALL, etc.)
+    risky_codes_upper = {c.upper() for c in cfg.risky_finding_codes}
+    risky_severities_upper = {s.upper() for s in getattr(cfg, "risky_severities", {"CRITICAL", "HIGH"})}
+
+    matching_findings: List[Dict[str, Any]] = []
+    triggered_codes: Set[str] = set()
+    for f in parsed_sim.findings:
+        code = ""
+        sev = ""
+        f_dict: Dict[str, Any] = {}
+        if isinstance(f, dict):
+            code = str(f.get("code") or f.get("rule_id") or f.get("type") or "").upper()
+            sev = str(f.get("severity") or "").upper()
+            f_dict = f
+        elif hasattr(f, "code") or hasattr(f, "rule_id"):
+            code = str(getattr(f, "code", getattr(f, "rule_id", ""))).upper()
+            sev = str(getattr(f, "severity", "")).upper()
+            f_dict = asdict(f) if hasattr(f, "__dataclass_fields__") else f.__dict__
+
+        if code in risky_codes_upper or (sev and sev in risky_severities_upper):
+            triggered_codes.add(code or sev)
+            matching_findings.append(f_dict)
+
+    if matching_findings:
+        sorted_risky = sorted(triggered_codes)
         return ComparisonResult(
             verdict=Verdict.NEEDS_REVIEW,
             reason_code=REASON_RISKY_OPERATION_FLAG,
@@ -695,7 +808,7 @@ def compare(
                 EvidenceReference(source="finding", identifier=code, details={"code": code})
                 for code in sorted_risky
             ],
-            findings=finding_objs,
+            findings=matching_findings,
         )
 
     # 4.7 Any unmatched claims remaining

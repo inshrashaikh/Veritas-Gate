@@ -259,15 +259,22 @@ class TraceAnalyzer:
 
         # B. Check state diffs for EIP-1967 implementation slot writes
         for diff in state_diffs:
-            if diff.get("effect_type") == "storage_slot":
-                effect_id = str(diff.get("effect_id", "")).lower()
+            slot_id = str(diff.get("effect_id", "")).lower()
+            raw_slot = str(diff.get("slot", "")).lower()
+            is_storage = (
+                diff.get("effect_type") == "storage_slot"
+                or "storage" in str(diff.get("effect_type", "")).lower()
+                or "slot" in diff
+            )
+            if is_storage:
+                slot_str = f"{slot_id} {raw_slot}"
                 if (
-                    EIP1967_IMPLEMENTATION_SLOT.lower() in effect_id
-                    or EIP1967_ADMIN_SLOT.lower() in effect_id
-                    or EIP1967_BEACON_SLOT.lower() in effect_id
+                    EIP1967_IMPLEMENTATION_SLOT.lower() in slot_str
+                    or EIP1967_ADMIN_SLOT.lower() in slot_str
+                    or EIP1967_BEACON_SLOT.lower() in slot_str
                 ):
-                    before = diff.get("before_value")
-                    after = diff.get("after_value")
+                    before = diff.get("before_value", diff.get("before"))
+                    after = diff.get("after_value", diff.get("after"))
                     if before != after:
                         findings.append(
                             TraceFinding(
@@ -280,7 +287,7 @@ class TraceAnalyzer:
                                 ),
                                 evidence={
                                     "address": diff.get("address"),
-                                    "slot_id": effect_id,
+                                    "slot_id": slot_id or raw_slot,
                                     "before": before,
                                     "after": after,
                                 },
@@ -327,10 +334,14 @@ class TraceAnalyzer:
 
         # B. Check state diffs for allowance
         for diff in state_diffs:
-            if diff.get("effect_type") == "allowance":
-                after_val = diff.get("after_value")
+            if diff.get("effect_type") == "allowance" or "allowance" in str(diff.get("effect_id", "")).lower():
+                after_val = diff.get("after_value", diff.get("after"))
+                if isinstance(after_val, str):
+                    try:
+                        after_val = int(after_val, 16) if after_val.startswith("0x") else int(after_val)
+                    except ValueError:
+                        pass
                 if isinstance(after_val, int) and after_val >= UNLIMITED_APPROVAL_THRESHOLD:
-                    # Avoid duplicate if already reported via logs
                     findings.append(
                         TraceFinding(
                             rule_id="R004_UNLIMITED_APPROVAL",
@@ -342,7 +353,7 @@ class TraceAnalyzer:
                             ),
                             evidence={
                                 "effect_id": diff.get("effect_id"),
-                                "token": diff.get("token_address"),
+                                "token": diff.get("token_address", diff.get("token")),
                                 "raw_value": after_val,
                             },
                         )

@@ -72,6 +72,7 @@ def parse_raw_amount(amount: Any, field_name: str = "amount") -> int:
     """
     Validates and parses a raw integer amount (e.g. uint256 in wei or base units).
     Rejects floats, ranges, negative values, and non-numeric strings to prevent ambiguity.
+    Accepts exact non-negative integers, decimal integer strings, and 0x-prefixed hex integer strings.
     """
     if isinstance(amount, bool):
         raise ClaimsValidationError(f"Invalid {field_name}: boolean value is not a valid amount")
@@ -81,6 +82,17 @@ def parse_raw_amount(amount: Any, field_name: str = "amount") -> int:
         return amount
     if isinstance(amount, str):
         cleaned = amount.strip()
+        if cleaned.startswith("0x") or cleaned.startswith("0X"):
+            clean_hex = cleaned[2:]
+            if not clean_hex or not re.match(r"^[0-9a-fA-F]+$", clean_hex):
+                raise ClaimsValidationError(
+                    f"Invalid {field_name}: ambiguous or non-integer value '{amount}'. "
+                    f"Amounts must be exact raw non-negative integer strings without decimals or ranges."
+                )
+            val = int(cleaned, 16)
+            if val < 0:
+                raise ClaimsValidationError(f"Invalid {field_name}: amount cannot be negative ({val})")
+            return val
         if not INTEGER_STRING_REGEX.match(cleaned):
             raise ClaimsValidationError(
                 f"Invalid {field_name}: ambiguous or non-integer value '{amount}'. "
@@ -244,6 +256,21 @@ class ProposalClaims:
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, sort_keys=True)
+
+    def get_token_transfer_claims(self) -> List[TokenTransferClaim]:
+        return [c for c in self.claims if isinstance(c, TokenTransferClaim)]
+
+    def get_native_transfer_claims(self) -> List[NativeTransferClaim]:
+        return [c for c in self.claims if isinstance(c, NativeTransferClaim)]
+
+    def get_ownership_claims(self) -> List[OwnershipExpectationClaim]:
+        return [c for c in self.claims if isinstance(c, OwnershipExpectationClaim)]
+
+    def get_allowance_claims(self) -> List[AllowanceExpectationClaim]:
+        return [c for c in self.claims if isinstance(c, AllowanceExpectationClaim)]
+
+    def get_forbidden_effect_claims(self) -> List[ForbiddenEffectClaim]:
+        return [c for c in self.claims if isinstance(c, ForbiddenEffectClaim)]
 
 
 def parse_claim_item(raw_claim: Dict[str, Any], index: int) -> BaseClaim:

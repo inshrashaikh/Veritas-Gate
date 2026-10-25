@@ -464,3 +464,101 @@ def test_proposals_persistence_reload():
             assert data["latest_version"] == 1
             assert data["versions"]["1"]["text"] == "Initial reload text"
 
+
+def test_analyze_fallback_demo_fixture_when_node_offline(client):
+    """When Anvil is offline and DEMO_MODE is true, /analyze returns labelled demo fixture."""
+    payload = {
+        "scenario_id": "scenario-honest-grant-5m",
+        "chain_id": 31337,
+        "sender": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "target": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+        "rpc_url": "http://127.0.0.1:8545",
+    }
+    # Mock offline node returning failure
+    mock_offline_result = SimulationResult(
+        schema_version=SCHEMA_VERSION,
+        scenario_id="scenario-honest-grant-5m",
+        chain_id=31337,
+        simulation_mode="read_only",
+        success=False,
+        state_diffs=[],
+        logs=[],
+        trace_complete=False,
+        findings=[],
+        errors=["Failed to connect to local RPC at http://127.0.0.1:8545: Connection refused"],
+    )
+    with patch("analyzer.server.Simulator.run", return_value=mock_offline_result):
+        res = client.post("/analyze", json=payload)
+        assert res.status_code == 200
+        body = res.get_json()
+        assert body["simulation"]["is_demo"] is True
+        assert body["simulation"]["data_source"] == "synthetic_demo_fixture"
+        assert "[DEMO FIXTURE]" in body["simulation"]["simulation_note"]
+        assert body["verdict"]["is_demo"] is True
+        assert body["verdict"]["data_source"] == "synthetic_demo_fixture"
+
+
+def test_analyze_fail_closed_on_incomplete_trace(client):
+    """Missing or incomplete trace data must NEVER be treated as safe (VERIFIED)."""
+    payload = {
+        "scenario_id": "TEST-INCOMPLETE-TRACE",
+        "chain_id": 31337,
+        "sender": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "target": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+    }
+    mock_incomplete = SimulationResult(
+        schema_version=SCHEMA_VERSION,
+        scenario_id="TEST-INCOMPLETE-TRACE",
+        chain_id=31337,
+        simulation_mode="read_only",
+        success=True,
+        state_diffs=[],
+        logs=[],
+        trace_complete=False,
+        findings=[{"rule_id": "R000_INCONCLUSIVE_TRACE", "severity": "WARNING", "title": "Inconclusive Trace", "explanation": "no trace", "evidence": {}}],
+        errors=["Incomplete trace: buffer exceeded limit"],
+    )
+    with patch("analyzer.server.Simulator.run", return_value=mock_incomplete):
+        res = client.post("/analyze", json=payload)
+        assert res.status_code == 200
+        verdict = res.get_json()["verdict"]
+        assert verdict["status"] == "NEEDS_REVIEW"
+        assert verdict["trace_complete"] is False
+        assert "incomplete or unavailable" in verdict["reason"]
+
+
+def test_analyze_ownership_hijack_verdict_mismatch(client):
+    """Unexpected ownership change in state diffs must immediately trigger MISMATCH."""
+    payload = {
+        "scenario_id": "TEST-OWNER-TAKEOVER",
+        "chain_id": 31337,
+        "sender": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "target": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+    }
+    mock_takeover = SimulationResult(
+        schema_version=SCHEMA_VERSION,
+        scenario_id="TEST-OWNER-TAKEOVER",
+        chain_id=31337,
+        simulation_mode="stateful_execution",
+        success=True,
+        state_diffs=[
+            {
+                "effect_id": "treasury_owner:0x1111111111111111111111111111111111111111",
+                "effect_type": "treasury_owner",
+                "address": "0x1111111111111111111111111111111111111111",
+                "before_value": "0x2222222222222222222222222222222222222222",
+                "after_value": "0x9999999999999999999999999999999999999999",
+            }
+        ],
+        logs=[],
+        trace_complete=True,
+        findings=[{"rule_id": "R001_DELEGATECALL", "severity": "HIGH", "title": "DELEGATECALL", "explanation": "delegatecall", "evidence": {}}],
+        errors=[],
+    )
+    with patch("analyzer.server.Simulator.run", return_value=mock_takeover):
+        res = client.post("/analyze", json=payload)
+        assert res.status_code == 200
+        verdict = res.get_json()["verdict"]
+        assert verdict["status"] == "MISMATCH"
+        assert "ownership hijacked" in verdict["reason"].lower()
+

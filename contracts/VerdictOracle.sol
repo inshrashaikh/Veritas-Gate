@@ -370,6 +370,9 @@ contract VerdictOracle {
             if (review.decision == ReviewDecision.REJECT) {
                 return (false, "VERIFIED proposal explicitly rejected by human review override");
             }
+            if (review.decision == ReviewDecision.ESCALATE) {
+                return (false, "VERIFIED proposal escalated by human review override");
+            }
             return (true, "Automated verdict is VERIFIED");
         }
 
