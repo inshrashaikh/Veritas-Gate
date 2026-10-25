@@ -1,178 +1,177 @@
-# Veritas Gate — Governance Contracts & Treasury Guard
+# Veritas Gate Architecture Plan
 
-> [!WARNING]
-> **LOCAL EDUCATIONAL HARNESS ONLY — NOT PRODUCTION READY**
-> This repository is a modular educational test harness designed to demonstrate:
-> 1. EVM execution dynamics (`call` vs `delegatecall` storage collisions).
-> 2. Automated simulation & security trace analysis.
-> 3. Proposal commitment registries, verdict oracles, and guarded treasury execution with 2-of-3 guardian emergency pause.
-> **Never deploy these contracts to a live public network or mainnet environment.**
+## 1. Purpose
 
----
+Veritas Gate is designed to help governance participants inspect a proposal's declared effects, compare them with evidence from local EVM execution, route uncertain results for human review, and enforce execution safeguards through Solidity contracts.
 
-## 1. Overview & Architecture
+The system separates evidence collection, verdict evaluation, human decisions, and on-chain execution. A simulation result is evidence for the decision process; it is not itself authorization to execute a proposal.
 
-Veritas Gate enforces proposal integrity, human-review gates, and challenge-window rules before governance proposals can execute against a guarded Treasury:
+> **Safety notice:** This project is intended for local development and evaluation. It has not been audited or designed for production use. Do not use it to secure live funds or deploy it to a public network.
 
-```
-contracts/
-├── MockToken.sol           # Minimal ERC-20 token (balances, transfer, approve, transferFrom, mint)
-├── Treasury.sol            # Phase 1 educational demonstration treasury (call vs delegatecall)
-├── ProposalRegistry.sol    # Phase 4 immutable versioned proposal commitment registry
-├── VerdictOracle.sol       # Phase 4 simulation verdict, human review history & challenge oracle
-├── GuardedTreasury.sol     # Phase 4 guarded treasury with 2-of-3 guardian pause & verification guards
-├── payloads/
-│   ├── Honest.sol          # 5M token grant without storage mutations
-│   └── Malicious.sol       # 5M token grant with deliberate Slot 0 collision (unsafe)
-└── test/
-    ├── Step1.t.sol         # Phase 1 call vs delegatecall test suite
-    └── Phase4.t.sol        # Phase 4 governance, oracle, guard, & multisig test suite
-```
+## 2. Architectural goals
 
----
+1. **Explicit proposal intent:** Represent expected and prohibited effects in a versioned, validated claims document.
+2. **Deterministic analysis:** Compare declared claims with simulation evidence using consistent verdict rules.
+3. **Fail closed:** Missing, malformed, incomplete, or ambiguous evidence must not be treated as a clean verification.
+4. **Reviewable decisions:** Preserve reviewer decisions, evidence provenance, and proposal history.
+5. **Execution integrity:** Bind execution to registered proposal versions, calldata, verdict eligibility, and challenge state.
+6. **Local boundaries:** Keep simulation RPC connections restricted to local EVM nodes.
 
-## 2. Core Governance Contracts (Phase 4)
+## 3. System context and data flow
 
-### 1. `ProposalRegistry.sol`
-- **Immutable Versioning**: Submitting a proposal creates version 1. Updates append sequential, immutable versions without modifying past history.
-- **Commitments**: Binds proposal text hash (`keccak256`), calldata hash (`keccak256`), and disclosed participant addresses.
-- **Integrity Verification**: `verifyLatestHashes(...)` allows callers to verify execution calldata and text against the latest registered proposal version.
-- **Validation**: Rejects empty fields, duplicate version content, and unauthorized authors.
-
-### 2. `VerdictOracle.sol`
-- **Automated Verdicts**: The simulation analyzer posts automated verification verdicts:
-  - `VERIFIED`: Proposal matches simulation invariants.
-  - `MISMATCH`: Proposal effects deviate from claims; permanently blocks execution.
-  - `NEEDS_REVIEW`: High-risk or complex proposal requiring authorized human review.
-- **Human Review History**: Authorized reviewers from an allowlist can post reviews (`APPROVE`, `REJECT`, `ESCALATE`) along with a reason hash. All reviews are appended immutably to history and never overwrite the original automated verdict records.
-- **Challenge System**: Challenges can be raised during the challenge window. Unresolved or successfully upheld challenges immediately block execution.
-
-### 3. `GuardedTreasury.sol`
-- **Removed Unrestricted Delegatecall**: Only standard, isolated EVM `call` is permitted. Any unrestricted delegatecall path is permanently removed.
-- **Proposal Guard Invariants**: Before executing any proposal, the contract verifies:
-  1. **Replay Protection**: Proposal version has not been executed previously.
-  2. **Governance Authorization**: Proposal version was explicitly authorized.
-  3. **Target & Value Binding**: Execution target and native value match authorization.
-  4. **Calldata Commitment**: `keccak256(data)` matches the registered `calldataHash`.
-  5. **Oracle Commitment**: Text hash and calldata hash match oracle commitments.
-  6. **Verdict Eligibility**: Status is `VERIFIED` or `NEEDS_REVIEW` with an authorized `APPROVE` review.
-  7. **Challenge Window**: Configured challenge window (default: 2 days / 172,800s) has elapsed.
-  8. **No Challenges**: No active unresolved challenge and no disqualification.
-  9. **Emergency Pause**: Contract is not paused.
-- **2-of-3 Guardian Emergency Pause**:
-  - Three distinct guardian addresses configured.
-  - Pausing requires 2 distinct guardians to approve the same `reasonHash`. No single guardian can pause alone.
-  - Unpausing requires 2 guardian approvals or governance owner intervention.
-
----
-
-## 3. Token Denomination
-
-- **Token**: `MockToken` (ERC-20 compatible)
-- **Decimals**: `18` (matches WETH, DAI, and standard DAO governance tokens)
-- **Base Unit**: `1 token = 1 * 10^18` wei (`1e18`)
-- **Grant Amount**: `$5,000,000` equivalent = `5,000,000 * 10^18` (`5_000_000e18`) tokens
-- **Initial Treasury Balance**: `10,000,000 * 10^18` (`10_000_000e18`) tokens
-
----
-
-## 4. Quick Start & Setup Guide
-
-### 🚀 Running Local Demo (No Blockchain Node or Wallets Required)
-
-Veritas Gate runs in **Demo Mode by default** for local development and review. You can inspect bytecode diffs, evaluate simulation traces, explore conflict-of-interest graphs, submit auditor reviews, and cast informed votes immediately.
-
-#### Prerequisites
-- Python 3.10+
-- Node.js 18+ (for frontend tests, optional)
-- [Foundry](https://getfoundry.sh/) (`forge`, `anvil` — only required for running smart contract tests)
-
----
-
-### Step 1: Environment Setup
-
-#### Option A: macOS & Linux (bash / zsh)
-```bash
-# 1. Create a virtual environment
-python3 -m venv .venv
-
-# 2. Activate the virtual environment
-source .venv/bin/activate
-
-# 3. Install Python dependencies
-pip install -r requirements.txt
+```mermaid
+flowchart LR
+    Author[Proposal author] --> UI[Governance dashboard]
+    UI <--> API[Analyzer and governance API]
+    Author --> Claims[Versioned proposal claims]
+    Claims --> API
+    API --> Validate[Claims and scenario validation]
+    Validate --> Sim[Local EVM simulator]
+    Sim --> Evidence[State changes, logs, and trace findings]
+    Evidence --> Compare[Claims comparison and verdict engine]
+    Compare --> Verdict{VERIFIED / MISMATCH / NEEDS_REVIEW}
+    Verdict -->|NEEDS_REVIEW| Queue[Human review queue]
+    Queue --> Reviewer[Authorized reviewer]
+    Reviewer --> Queue
+    Compare --> Provenance[Evidence provenance and audit records]
+    Queue --> Provenance
+    API <--> Adapter[Local contract adapter]
+    Adapter <--> Registry[Proposal registry]
+    Adapter <--> Oracle[Verdict oracle]
+    Registry --> Guard[Treasury execution guard]
+    Oracle --> Guard
+    Governance[Governance authorization] --> Guard
+    Guard --> Target[Authorized execution target]
+    UI --> API
 ```
 
-#### Option B: Windows (PowerShell)
+### Analysis flow
+
+1. A proposal and its claims are submitted through the dashboard or API.
+2. The API validates the input schema, addresses, integer amounts, required fields, and claim identifiers.
+3. The simulator executes the scenario against a local EVM and collects available state changes, logs, and execution traces.
+4. Trace rules classify security-sensitive operations and report when trace evidence is incomplete.
+5. The comparison engine evaluates claims against observed effects and trace findings:
+   - `MISMATCH` when reliable evidence shows a material violation.
+   - `NEEDS_REVIEW` when evidence is incomplete, uncertain, or indicates a risky operation.
+   - `VERIFIED` only when all required claims match and evidence is sufficiently complete.
+6. Results and supporting evidence are recorded. `NEEDS_REVIEW` proposals are routed to the review queue.
+7. Authorized reviewers record a reasoned decision; review history is retained.
+
+### Execution flow
+
+1. Governance authorizes a specific proposal version, target, and native value.
+2. The proposal registry and verdict oracle hold the versioned commitments and decision state.
+3. The Treasury guard checks authorization, replay status, target and value, calldata and proposal commitments, verdict eligibility, challenge state, and pause status.
+4. Execution is performed using a normal EVM call. The guard does not expose unrestricted delegatecall execution.
+5. A 2-of-3 guardian quorum can pause execution in an emergency.
+
+## 4. Component plan
+
+| Layer | Components | Responsibility |
+| --- | --- | --- |
+| User interface | `dashboard/` | Present proposals, simulation evidence, findings, review actions, and governance status. |
+| API and application services | `analyzer/server.py` | Provide proposal, analysis, review, audit, and status endpoints; coordinate the analyzer services. |
+| Claims and input validation | `analyzer/claims.py`, `analyzer/schemas.py` | Define versioned claims and scenario structures; reject invalid or ambiguous inputs. |
+| Simulation and evidence | `analyzer/simulate.py`, `analyzer/trace_rules.py` | Run scenarios on a local EVM, collect state and trace evidence, and identify security-sensitive operations. |
+| Verdict evaluation | `analyzer/compare.py` | Compare claims with evidence and produce `VERIFIED`, `MISMATCH`, or `NEEDS_REVIEW` with reason codes. |
+| Review and provenance | `analyzer/review_queue.py`, `analyzer/provenance.py` | Persist review transitions and decisions, maintain audit records, and verify evidence content hashes. |
+| Contract integration | `analyzer/contract_adapter.py` | Connect the API to deployed local registry and oracle contracts. |
+| On-chain controls | `contracts/ProposalRegistry.sol`, `contracts/VerdictOracle.sol`, `contracts/GuardedTreasury.sol` | Maintain proposal commitments, verdict and challenge state, and guarded execution rules. |
+
+## 5. Data and trust boundaries
+
+| Boundary | Data crossing it | Required treatment |
+| --- | --- | --- |
+| Author to API | Proposal metadata, claims, scenario inputs, and evidence references | Validate types, required fields, schema versions, addresses, amounts, and payload size. |
+| API to local EVM | Scenario transactions and read requests | Restrict RPC destinations to loopback addresses; isolate stateful simulation with snapshots and restoration. |
+| Simulator to verdict engine | State changes, logs, trace findings, errors, completeness indicator | Preserve raw values and distinguish missing evidence from zero-valued state. |
+| API to reviewer | Verdict, reason codes, evidence, and proposal context | Require configured reviewer authorization and a non-empty decision rationale. |
+| API to contracts | Proposal version, hashes, verdict/review state, and execution metadata | Use the contract adapter and enforce on-chain authorization independently of API output. |
+| Treasury to target | Authorized target, value, and calldata | Enforce commitment, replay, challenge, and pause checks before execution. |
+
+Local JSON persistence is used for proposal records, review queue state, and provenance manifests. Hash verification establishes whether stored or submitted bytes match an expected digest; it does not establish the truth of their contents.
+
+## 6. Interface and decision contracts
+
+- **Claims:** `veritas-claims-v1.0`, defined by [analyzer/claims.py](analyzer/claims.py).
+- **Simulation and verdict interfaces:** See [docs/SIMULATION_INTERFACE.md](docs/SIMULATION_INTERFACE.md).
+- **Verdict outcomes:** `VERIFIED`, `MISMATCH`, and `NEEDS_REVIEW`.
+- **Amounts:** Exact non-negative integer values; token decimals are not applied implicitly by the claims parser.
+- **Addresses:** Valid 20-byte hexadecimal EVM addresses, normalized by the claims parser.
+- **Evidence:** Incomplete trace or missing required evidence remains explicit and must not be interpreted as a clean result.
+
+## 7. Implementation stages
+
+This sequence describes the intended architecture dependency order:
+
+1. **Define interfaces:** Stabilize claims, scenario, simulation-result, and verdict schemas.
+2. **Build the analysis core:** Validate inputs, collect local execution evidence, apply trace rules, and compare claims with effects.
+3. **Expose application workflows:** Provide API routes for proposal registration, analysis, reviews, provenance, and audit history.
+4. **Add the governance interface:** Connect the dashboard to API operations and present evidence and decision state clearly.
+5. **Enforce execution constraints:** Connect proposal commitments and verdict state to the Treasury guard, including challenge and guardian controls.
+6. **Harden and verify:** Exercise component boundaries, failure cases, persistence recovery, contract invariants, and operational constraints.
+
+## 8. Local development
+
+### Requirements
+
+- Python 3.10 or newer
+- Dependencies listed in `requirements.txt`
+- Foundry, including Anvil, for local EVM simulation and Solidity commands
+- Node.js for dashboard logic checks
+
+### Install
+
+#### Windows PowerShell
+
 ```powershell
-# 1. Create a virtual environment
 python -m venv .venv
-
-# 2. Activate the virtual environment
 .venv\Scripts\Activate.ps1
-
-# 3. Install Python dependencies
 pip install -r requirements.txt
 ```
 
----
+#### macOS or Linux
 
-### Step 2: Start Veritas Gate
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-Run the unified launcher (auto-detects project virtual environment):
+### Start the application
+
 ```bash
 python run.py
 ```
 
-Expected startup output:
-```text
-=================================================================
-        VERITAS GATE — DETERMINISTIC GOVERNANCE ENGINE
-=================================================================
-[*] Starting Analyzer API Server on http://127.0.0.1:5000 (Demo Mode: true) ...
-    -> API Ready: http://127.0.0.1:5000
-    -> Health:    http://127.0.0.1:5000/health
-[*] Starting Governance Dashboard on http://localhost:3000 ...
-    -> Dashboard UI: http://localhost:3000
-=================================================================
- Veritas Gate Application is RUNNING (DEMO MODE — SIMULATED DATA).
- • Web Dashboard: http://localhost:3000
- • Analyzer API:  http://127.0.0.1:5000
- • Mode:          Demo (Offline local development, zero RPC needed)
- Press Ctrl+C to terminate all services.
-=================================================================
+Default local endpoints:
+
+- Dashboard: [http://localhost:3000](http://localhost:3000)
+- API: [http://127.0.0.1:5000](http://127.0.0.1:5000)
+- Health status: [http://127.0.0.1:5000/health](http://127.0.0.1:5000/health)
+
+The API and dashboard can also be started separately:
+
+```bash
+python run.py --api-only
+python run.py --dashboard-only
 ```
 
-- **Governance Dashboard**: [http://localhost:3000](http://localhost:3000)
-- **Analyzer API & Health**: [http://127.0.0.1:5000/health](http://127.0.0.1:5000/health)
+Start Anvil separately when running EVM scenarios. The simulator is designed to connect only to a local RPC endpoint.
 
----
+### Verification commands
 
-### Step 3: Running Test Suites
-
-#### 1. Python Analyzer & Demo Test Suite
 ```bash
-.venv/bin/pytest -v
-```
-*(Runs all 97 tests across claims, comparison, determinism, provenance, review queue, trace rules, and demo mode)*
-
-#### 2. Native Frontend Component Test Suite
-```bash
+python -m pytest
 node --test tests/frontend/test_dashboard_logic.test.mjs
-```
-*(Runs 16 tests covering XSS sanitization, token formatting, demo labels, and simulation separation)*
-
-#### 3. Foundry Smart Contract Test Suite
-```bash
 forge test -vv
 ```
-*(Runs 26 contract tests verifying call vs delegatecall, ProposalRegistry, VerdictOracle, and 2-of-3 GuardedTreasury)*
 
----
+## 9. Operational constraints
 
-## 5. Security Invariants Tested
-
-- **Unauthorized Roles**: Unauthorized callers cannot post oracle verdicts, submit human reviews, or trigger guardian pause.
-- **Rejection of Unsafe Proposals**: Execution is blocked by `MISMATCH`, unapproved `NEEDS_REVIEW`, `REJECT` reviews, active challenges, and disqualified proposals.
-- **Integrity Protections**: Replay attacks, calldata substitution after authorization, and early execution before the challenge window elapses are strictly blocked.
-- **Multisig Resilience**: Single guardians cannot pause alone; exact 2-of-3 consensus is required.
+- The API and dashboard do not provide production-grade public authentication or transport security.
+- Local configuration determines reviewer authorization; protect the local environment and its persisted records.
+- Trace capabilities depend on the EVM client. Unavailable trace information must remain visible as inconclusive.
+- The contracts and off-chain services have not undergone an independent security audit.
+- Treat analysis outcomes as decision support, not as a substitute for governance authorization or a security assessment.
