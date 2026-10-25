@@ -43,12 +43,40 @@ export function renderOverview(state) {
     `;
   }
 
-  if (!metrics) {
+  if (state.loading) {
     return `
       <section class="overview-section">
         <div class="loading-state">
           <div class="spinner"></div>
           <p>Loading governance analytics...</p>
+        </div>
+      </section>
+    `;
+  }
+
+  if (!metrics) {
+    return `
+      <section class="overview-section" aria-labelledby="overview-heading">
+        <div class="card alert-card error-alert">
+          <div class="alert-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+          </div>
+          <div class="alert-body">
+            <h3>No Metrics Available</h3>
+            <p>Veritas Gate API at <code>http://127.0.0.1:5000</code> is online, but no metrics are returned.</p>
+            <div class="alert-actions" style="margin-top: 12px;">
+              <button class="btn btn-sm btn-primary" onclick="document.getElementById('toggle-demo-btn').click()">
+                Enable Demo Mode (Labeled Fixtures)
+              </button>
+              <button class="btn btn-sm btn-outline" onclick="document.getElementById('refresh-btn').click()">
+                Retry Connection
+              </button>
+            </div>
+          </div>
         </div>
       </section>
     `;

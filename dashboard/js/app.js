@@ -75,9 +75,12 @@ class App {
         store.setGuardianEvents(guardianRes.value.data);
       }
 
-      // If everything failed and demo mode is off, record error
-      if (metricsRes.status === 'rejected' && proposalsRes.status === 'rejected') {
-        store.setError(metricsRes.reason?.message || 'Failed to connect to Veritas Gate API');
+      // If requests failed and demo mode is off, record error
+      if (!CONFIG.DEMO_MODE && (metricsRes.status === 'rejected' || proposalsRes.status === 'rejected')) {
+        const errMsg = (metricsRes.status === 'rejected' ? metricsRes.reason?.message : null) ||
+                       (proposalsRes.status === 'rejected' ? proposalsRes.reason?.message : null) ||
+                       'Failed to connect to Veritas Gate API';
+        store.setError(errMsg);
       }
     } catch (err) {
       store.setError(err.message || 'Unexpected connection error');
@@ -442,6 +445,10 @@ class App {
 
 // Instantiate and attach global instance
 window.app = new App();
-window.addEventListener('DOMContentLoaded', () => {
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', () => {
+    window.app.init();
+  });
+} else {
   window.app.init();
-});
+}

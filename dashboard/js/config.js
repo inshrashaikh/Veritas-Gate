@@ -35,8 +35,11 @@ function safeSetStorage(key, val) {
 }
 
 export const CONFIG = {
-  // Configurable base URL; defaults to local backend or relative path
-  API_BASE_URL: safeGetStorage(STORAGE_KEYS.API_URL, 'http://localhost:8000/api/v1'),
+  // Configurable base URL; defaults to local backend at port 5000
+  API_BASE_URL: (() => {
+    const val = safeGetStorage(STORAGE_KEYS.API_URL);
+    return (!val || val.includes(':8000')) ? 'http://127.0.0.1:5000' : val;
+  })(),
   
   // FAIL-CLOSED / SAFETY RULE: Demo mode is strictly disabled by default
   DEMO_MODE: safeGetStorage(STORAGE_KEYS.DEMO_MODE, 'false') === 'true',
@@ -44,7 +47,7 @@ export const CONFIG = {
   THEME: safeGetStorage(STORAGE_KEYS.THEME, 'dark'),
   
   REFRESH_INTERVAL_MS: 30000,
-  REQUEST_TIMEOUT_MS: 8000,
+  REQUEST_TIMEOUT_MS: 3000,
   
   VERDICT_CLASSES: {
     VERIFIED: 'verdict-verified',
