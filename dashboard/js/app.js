@@ -200,6 +200,11 @@ class App {
               </label>
               <span class="text-muted text-xs">Uses isolated educational fixtures from Phase 1 &amp; Phase 3 test cases.</span>
             </div>
+            <div class="form-group mt-2">
+              <button id="modal-reset-demo-btn" type="button" class="btn btn-sm btn-outline">
+                ↺ Reset Stored Demo Data &amp; Interactions
+              </button>
+            </div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-sm btn-outline close-modal-btn">Cancel</button>
@@ -246,6 +251,15 @@ class App {
       });
     }
 
+    // Reset Demo Data buttons
+    const resetDemoBtn = document.getElementById('reset-demo-btn');
+    if (resetDemoBtn) {
+      resetDemoBtn.addEventListener('click', async () => {
+        store.resetDemoActions();
+        await this.fetchData();
+      });
+    }
+
     // Settings Modal
     const settingsBtn = document.getElementById('settings-btn');
     const modal = document.getElementById('settings-modal');
@@ -253,6 +267,15 @@ class App {
       settingsBtn.addEventListener('click', () => modal.classList.remove('hidden'));
       modal.querySelectorAll('.close-modal-btn').forEach(b => {
         b.addEventListener('click', () => modal.classList.add('hidden'));
+      });
+    }
+
+    const modalResetBtn = document.getElementById('modal-reset-demo-btn');
+    if (modalResetBtn) {
+      modalResetBtn.addEventListener('click', async () => {
+        store.resetDemoActions();
+        if (modal) modal.classList.add('hidden');
+        await this.fetchData();
       });
     }
 
@@ -371,8 +394,10 @@ class App {
               feedback.innerHTML = `<span class="badge badge-warning">${escapeHTML(res.error)}</span>`;
             }
           } else {
+            store.recordReviewDecision(propId, res);
             if (feedback) {
-              feedback.innerHTML = `<span class="badge badge-success">Review decision recorded: ${escapeHTML(action)}</span>`;
+              const label = res.simulated ? ' [SIMULATED LOCAL]' : '';
+              feedback.innerHTML = `<span class="badge badge-success">Review recorded: ${escapeHTML(action)}${label}</span>`;
             }
           }
         } catch (err) {
@@ -421,8 +446,10 @@ class App {
               voteFeedback.innerHTML = `<span class="badge badge-warning">${escapeHTML(res.error)}</span>`;
             }
           } else {
+            store.recordVote(selected.id, res);
             if (voteFeedback) {
-              voteFeedback.innerHTML = `<span class="badge badge-success">Vote successfully recorded for ${escapeHTML(choice)}</span>`;
+              const label = res.simulated ? ' (Demo Mode — Simulated Local Record)' : '';
+              voteFeedback.innerHTML = `<span class="badge badge-success">Vote recorded: ${escapeHTML(choice)}${label}</span>`;
             }
           }
         } catch (err) {

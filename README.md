@@ -76,37 +76,97 @@ contracts/
 
 ---
 
-## 4. Setup & Running Tests
+## 4. Quick Start & Setup Guide
 
-### Prerequisites
-- [Foundry](https://getfoundry.sh/) (`forge`, `anvil`)
-- Python 3.10+ (for Phase 2 analyzer)
+### 🚀 Running Local Demo (No Blockchain Node or Wallets Required)
 
-### Run Foundry Test Suite (Phases 1 & 4)
+Veritas Gate runs in **Demo Mode by default** for local development and review. You can inspect bytecode diffs, evaluate simulation traces, explore conflict-of-interest graphs, submit auditor reviews, and cast informed votes immediately.
+
+#### Prerequisites
+- Python 3.10+
+- Node.js 18+ (for frontend tests, optional)
+- [Foundry](https://getfoundry.sh/) (`forge`, `anvil` — only required for running smart contract tests)
+
+---
+
+### Step 1: Environment Setup
+
+#### Option A: macOS & Linux (bash / zsh)
+```bash
+# 1. Create a virtual environment
+python3 -m venv .venv
+
+# 2. Activate the virtual environment
+source .venv/bin/activate
+
+# 3. Install Python dependencies
+pip install -r requirements.txt
+```
+
+#### Option B: Windows (PowerShell)
+```powershell
+# 1. Create a virtual environment
+python -m venv .venv
+
+# 2. Activate the virtual environment
+.venv\Scripts\Activate.ps1
+
+# 3. Install Python dependencies
+pip install -r requirements.txt
+```
+
+---
+
+### Step 2: Start Veritas Gate
+
+Run the unified launcher (auto-detects project virtual environment):
+```bash
+python run.py
+```
+
+Expected startup output:
+```text
+=================================================================
+        VERITAS GATE — DETERMINISTIC GOVERNANCE ENGINE
+=================================================================
+[*] Starting Analyzer API Server on http://127.0.0.1:5000 (Demo Mode: true) ...
+    -> API Ready: http://127.0.0.1:5000
+    -> Health:    http://127.0.0.1:5000/health
+[*] Starting Governance Dashboard on http://localhost:3000 ...
+    -> Dashboard UI: http://localhost:3000
+=================================================================
+ Veritas Gate Application is RUNNING (DEMO MODE — SIMULATED DATA).
+ • Web Dashboard: http://localhost:3000
+ • Analyzer API:  http://127.0.0.1:5000
+ • Mode:          Demo (Offline local development, zero RPC needed)
+ Press Ctrl+C to terminate all services.
+=================================================================
+```
+
+- **Governance Dashboard**: [http://localhost:3000](http://localhost:3000)
+- **Analyzer API & Health**: [http://127.0.0.1:5000/health](http://127.0.0.1:5000/health)
+
+---
+
+### Step 3: Running Test Suites
+
+#### 1. Python Analyzer & Demo Test Suite
+```bash
+.venv/bin/pytest -v
+```
+*(Runs all 97 tests across claims, comparison, determinism, provenance, review queue, trace rules, and demo mode)*
+
+#### 2. Native Frontend Component Test Suite
+```bash
+node --test tests/frontend/test_dashboard_logic.test.mjs
+```
+*(Runs 16 tests covering XSS sanitization, token formatting, demo labels, and simulation separation)*
+
+#### 3. Foundry Smart Contract Test Suite
 ```bash
 forge test -vv
 ```
-
-Expected output:
-```text
-Ran 7 tests for contracts/test/Step1.t.sol:Step1Test
-[PASS] ... 7 passed
-
-Ran 19 tests for contracts/test/Phase4.t.sol:Phase4Test
-[PASS] ... 19 passed
-
-Suite result: ok. 26 passed; 0 failed; 0 skipped
-```
-
-### Run Python Analyzer Test Suite (Phase 2)
-```bash
-.venv/bin/pytest -q
-```
-
-Expected output:
-```text
-25 passed in ...s
-```
+*(Runs 26 contract tests verifying call vs delegatecall, ProposalRegistry, VerdictOracle, and 2-of-3 GuardedTreasury)*
 
 ---
 

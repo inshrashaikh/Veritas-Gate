@@ -96,12 +96,12 @@ def test_security_module_escaping():
     assert ".replace(/\"/g, '&quot;')" in sec_js
 
 
-def test_config_demo_mode_disabled_by_default():
-    """Verify demo mode is strictly disabled by default."""
+def test_config_demo_mode_enabled_by_default():
+    """Verify demo mode is enabled by default for local development."""
     cfg_js = (DASHBOARD_DIR / "js/config.js").read_text(encoding="utf-8")
     assert "DEMO_MODE:" in cfg_js
-    # Must default to false when no localStorage entry exists
-    assert "safeGetStorage(STORAGE_KEYS.DEMO_MODE, 'false') === 'true'" in cfg_js
+    # Must default to true when no localStorage entry exists
+    assert "safeGetStorage(STORAGE_KEYS.DEMO_MODE, 'true') === 'true'" in cfg_js
 
 
 def test_demo_data_labeled_and_has_all_verdicts():
@@ -158,3 +158,21 @@ def test_reviewer_queue_requires_written_reason():
     assert "minimum 10 characters" in rev_js
     assert "reviewer-reason-input" in rev_js
     assert "disabled" in rev_js  # Buttons start disabled until min length
+
+
+def test_demo_indicator_and_reset():
+    """Verify header displays persistent DEMO MODE indicator and reset capability."""
+    hdr_js = (DASHBOARD_DIR / "js/components/header.js").read_text(encoding="utf-8")
+    assert "DEMO MODE — SIMULATED DATA" in hdr_js
+    assert "reset-demo-btn" in hdr_js
+
+    cfg_js = (DASHBOARD_DIR / "js/config.js").read_text(encoding="utf-8")
+    assert "export function resetDemoData" in cfg_js
+
+
+def test_safe_separation_no_keys():
+    """Verify frontend code contains no private keys or real transaction dispatch in demo mode."""
+    api_js = (DASHBOARD_DIR / "js/api.js").read_text(encoding="utf-8")
+    assert "0x" not in api_js or "privateKey" not in api_js
+    assert "simulated" in api_js
+    assert "onChainConfirmed: false" in api_js

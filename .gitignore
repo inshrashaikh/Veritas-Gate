@@ -15,3 +15,5 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.log
+.veritas_*.log

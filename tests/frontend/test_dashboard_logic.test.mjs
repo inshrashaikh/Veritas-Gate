@@ -128,14 +128,17 @@ test('api: submitReviewDecision requires written reason of minimum 10 characters
   );
 });
 
-test('api: submitReviewDecision never fakes success in demo mode', async () => {
+test('api: submitReviewDecision records simulated local decision in demo mode without on-chain execution', async () => {
   CONFIG.DEMO_MODE = true;
   const res = await api.submitReviewDecision('prop-003', {
     action: 'APPROVE',
     reason: 'Verified stateless library call in sandboxed bytecode.'
   });
-  assert.equal(res.success, false);
-  assert.ok(res.error.includes('DEMO MODE'));
+  assert.equal(res.success, true);
+  assert.equal(res.simulated, true);
+  assert.equal(res.onChainConfirmed, false);
+  assert.equal(res.isDemo, true);
+  assert.ok(res.note.includes('NOT an on-chain transaction'));
 });
 
 test('api: submitVote requires mandatory comprehension acknowledgement', async () => {
@@ -147,11 +150,43 @@ test('api: submitVote requires mandatory comprehension acknowledgement', async (
   );
 });
 
-test('api: submitVote never fakes on-chain votes in demo mode', async () => {
+test('api: submitVote records simulated vote in demo mode without on-chain execution', async () => {
   CONFIG.DEMO_MODE = true;
   const res = await api.submitVote('prop-001', { choice: 'FOR', acknowledged: true });
-  assert.equal(res.success, false);
-  assert.ok(res.error.includes('DEMO MODE'));
+  assert.equal(res.success, true);
+  assert.equal(res.simulated, true);
+  assert.equal(res.onChainConfirmed, false);
+  assert.equal(res.isDemo, true);
+  assert.ok(res.note.includes('NOT submitted to on-chain Governor'));
+});
+
+test('state: recordReviewDecision and recordVote update state and reset cleanly', () => {
+  const testStore = new StateStore();
+  testStore.setProposals(DEMO_PROPOSALS);
+
+  // Record simulated review
+  testStore.recordReviewDecision('prop-003', {
+    action: 'APPROVE',
+    reason: 'Test approved in offline demo',
+    simulated: true
+  });
+  const reviewedProp = testStore.state.proposals.find(p => p.id === 'prop-003');
+  assert.equal(reviewedProp.status, 'CLEARED_BY_AUDITOR');
+  assert.equal(reviewedProp.reviews.length, 1);
+
+  // Record simulated vote
+  testStore.recordVote('prop-001', {
+    choice: 'FOR',
+    simulated: true
+  });
+  const votedProp = testStore.state.proposals.find(p => p.id === 'prop-001');
+  assert.equal(votedProp.userVote.choice, 'FOR');
+
+  // Reset
+  testStore.resetDemoActions();
+  testStore.setProposals(DEMO_PROPOSALS);
+  const resetProp = testStore.state.proposals.find(p => p.id === 'prop-003');
+  assert.equal(resetProp.reviews, undefined);
 });
 
 // ---------------------------------------------------------------------------

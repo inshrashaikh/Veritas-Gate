@@ -8,7 +8,8 @@
  * - Clear error handling with loading states and transparent status reporting.
  * - NEVER silently replaces failed API responses with fake success data.
  * - If DEMO_MODE is enabled, routes to demoData with explicit [DEMO DATA] tags.
- * - State mutations (reviews, votes) must call the real API and reject without confirmation.
+ * - In DEMO_MODE, actions (reviews, votes) simulate functional local workflows while explicitly declaring onChainConfirmed: false.
+ * - In Live mode, mutations call the real backend and reject without confirmation.
  */
 
 import { CONFIG } from './config.js';
@@ -47,8 +48,8 @@ class ApiClient {
         let errorMsg = `HTTP Error ${response.status} (${response.statusText})`;
         try {
           const errData = await response.json();
-          if (errData && errData.message) {
-            errorMsg = errData.message;
+          if (errData && (errData.detail || errData.error || errData.message)) {
+            errorMsg = errData.detail || errData.error || errData.message;
           }
         } catch (_) {}
         throw new Error(errorMsg);
@@ -61,8 +62,9 @@ class ApiClient {
     } catch (err) {
       clearTimeout(timeoutId);
       this.isLiveAvailable = false;
-      this.lastError = err.message || 'Network connection failed';
-      throw err;
+      const baseErr = err.name === 'AbortError' ? 'Request timed out' : (err.message || 'Network connection failed');
+      this.lastError = `${baseErr} (Target: ${CONFIG.API_BASE_URL})`;
+      throw new Error(this.lastError);
     }
   }
 
@@ -114,7 +116,8 @@ class ApiClient {
 
   /**
    * Submit Reviewer Decision.
-   * STRICT: Requires non-empty reason. Never simulates on-chain signatures or success.
+   * STRICT: Requires non-empty reason (minimum 10 chars).
+   * Demo mode records a simulated local decision without submitting blockchain transactions.
    */
   async submitReviewDecision(proposalId, { action, reason, reviewerAddress }) {
     if (!action || !['APPROVE', 'REJECT', 'ESCALATE'].includes(action)) {
@@ -125,11 +128,17 @@ class ApiClient {
     }
 
     if (CONFIG.DEMO_MODE) {
-      // Strictly transparent: Do not simulate success
+      // Functional demo simulation with safe separation: local record only, never an on-chain transaction
       return {
-        success: false,
-        error: 'DEMO MODE: Reviewer signatures and on-chain attestations cannot be executed in demo mode. Please connect a live backend API.',
-        isDemo: true
+        success: true,
+        simulated: true,
+        action,
+        reason: reason.trim(),
+        reviewer: reviewerAddress || '0xAuditor77777777777777777777777777777777',
+        isDemo: true,
+        onChainConfirmed: false,
+        timestamp: new Date().toISOString(),
+        note: 'Simulated local demonstration record — NOT an on-chain transaction or real signature.'
       };
     }
 
@@ -147,7 +156,8 @@ class ApiClient {
 
   /**
    * Submit Informed Vote.
-   * STRICT: Requires acknowledgement checkbox. Never simulates on-chain votes.
+   * STRICT: Requires acknowledgement checkbox.
+   * Demo mode records a simulated local ballot without submitting to on-chain Governor.
    */
   async submitVote(proposalId, { choice, acknowledged }) {
     if (!acknowledged) {
@@ -158,10 +168,16 @@ class ApiClient {
     }
 
     if (CONFIG.DEMO_MODE) {
+      // Functional demo simulation with safe separation: local ballot acknowledgement only
       return {
-        success: false,
-        error: 'DEMO MODE: Voting integration is unavailable without an active on-chain Governor contract or live backend.',
-        isDemo: true
+        success: true,
+        simulated: true,
+        choice,
+        acknowledged: true,
+        isDemo: true,
+        onChainConfirmed: false,
+        timestamp: new Date().toISOString(),
+        note: 'Simulated local ballot acknowledgement — NOT submitted to on-chain Governor.'
       };
     }
 

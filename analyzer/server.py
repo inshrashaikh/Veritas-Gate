@@ -43,10 +43,19 @@ def create_app(
     storage_dir: Optional[str] = None,
     contract_adapter: Optional[ContractAdapter] = None,
     authorized_reviewers: Optional[set[str]] = None,
+    demo_mode: Optional[bool] = None,
 ) -> Flask:
     """Factory creating and configuring the Flask API application."""
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+
+    # Explicit Demo Mode configuration (enabled by default for local development)
+    is_demo = (
+        demo_mode
+        if demo_mode is not None
+        else os.environ.get("VERITAS_DEMO_MODE", "true").lower() in ("true", "1", "yes")
+    )
+    app.config["DEMO_MODE"] = is_demo
 
     # Setup local storage paths
     base_dir = Path(storage_dir) if storage_dir else Path(__file__).resolve().parent / "data"
@@ -124,6 +133,7 @@ def create_app(
             "status": "ok",
             "service": "veritas-analyzer-api",
             "version": "1.0.0",
+            "demo_mode": app.config.get("DEMO_MODE", True),
             "timestamp": time.time(),
             "rpc_connected": adapter.is_connected(),
         }), 200
@@ -260,15 +270,24 @@ def create_app(
 
     @app.route("/proposals/<proposal_id>", methods=["GET"])
     def get_proposal(proposal_id: str):
-        if proposal_id not in proposals_db:
-            return jsonify({"error": f"Proposal '{proposal_id}' not found"}), 404
+        if proposal_id in proposals_db:
+            prop = proposals_db[proposal_id]
+            return jsonify({
+                "proposal_id": prop["proposal_id"],
+                "latest_version": prop["latest_version"],
+                "versions": prop["versions"],
+                "is_demo": False,
+            }), 200
 
-        prop = proposals_db[proposal_id]
-        return jsonify({
-            "proposal_id": prop["proposal_id"],
-            "latest_version": prop["latest_version"],
-            "versions": prop["versions"],
-        }), 200
+        # Fallback to seeded demo proposals if unindexed or in demo mode
+        for p in default_data.get("proposals", []):
+            if p.get("id") == proposal_id:
+                p_copy = dict(p)
+                p_copy["is_demo"] = True
+                p_copy["data_source"] = "seeded_demo_fixture"
+                return jsonify(p_copy), 200
+
+        return jsonify({"error": f"Proposal '{proposal_id}' not found"}), 404
 
     @app.route("/analyze", methods=["POST"])
     def analyze_scenario():
@@ -410,6 +429,78 @@ def create_app(
             return jsonify({"error": "Validation error", "detail": str(ve)}), 400
         except Exception as e:
             return jsonify({"error": "Failed to process review", "detail": str(e)}), 500
+
+    @app.route("/proposals/<proposal_id>/reviews", methods=["POST"])
+    def post_proposal_review(proposal_id: str):
+        if not request.is_json:
+            return jsonify({"error": "Expected application/json content-type"}), 400
+
+        data = request.get_json()
+        action = data.get("action")
+        reason = data.get("reason", "")
+        reviewer = data.get("reviewer", "0xAuditor77777777777777777777777777777777")
+        sync_on_chain = data.get("sync_on_chain", False)
+
+        if not action or action not in ("APPROVE", "REJECT", "ESCALATE"):
+            return jsonify({"error": "Invalid action; must be APPROVE, REJECT, or ESCALATE"}), 400
+        if not reason or len(reason.strip()) < 10:
+            return jsonify({"error": "Mandatory written reason required (minimum 10 characters)"}), 400
+
+        if app.config.get("DEMO_MODE", True):
+            simulated_review = {
+                "proposal_id": proposal_id,
+                "action": action,
+                "reason": reason.strip(),
+                "reviewer": reviewer,
+                "timestamp": time.time(),
+                "is_demo": True,
+                "simulated": True,
+                "on_chain_confirmed": False,
+                "note": "Simulated local demonstration record — NOT an on-chain transaction or real signature."
+            }
+            return jsonify({
+                "message": "Demo review recorded (simulated)",
+                "success": True,
+                "is_demo": True,
+                "simulated": True,
+                "review": simulated_review,
+            }), 200
+
+        # Live mode: forward to post_review
+        return post_review(proposal_id, 1)
+
+    @app.route("/proposals/<proposal_id>/vote", methods=["POST"])
+    def post_proposal_vote(proposal_id: str):
+        if not request.is_json:
+            return jsonify({"error": "Expected application/json content-type"}), 400
+
+        data = request.get_json()
+        choice = data.get("choice")
+        acknowledged = data.get("acknowledged", False)
+
+        if not acknowledged:
+            return jsonify({"error": "You must acknowledge that you have seen the real effects before voting."}), 400
+        if not choice or choice not in ("FOR", "AGAINST", "ABSTAIN"):
+            return jsonify({"error": "Invalid vote choice: must be FOR, AGAINST, or ABSTAIN"}), 400
+
+        if app.config.get("DEMO_MODE", True):
+            return jsonify({
+                "message": "Demo vote acknowledged and recorded locally",
+                "success": True,
+                "is_demo": True,
+                "simulated": True,
+                "on_chain_confirmed": False,
+                "choice": choice,
+                "acknowledged": True,
+                "timestamp": time.time(),
+                "note": "Simulated local ballot acknowledgement — NOT submitted to on-chain Governor."
+            }), 200
+
+        return jsonify({
+            "error": "Live on-chain Governor contract is not configured on local RPC",
+            "success": False,
+            "is_demo": False,
+        }), 503
 
     @app.route("/audit/<proposal_id>", methods=["GET"])
     def get_audit(proposal_id: str):

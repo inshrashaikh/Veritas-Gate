@@ -1,7 +1,7 @@
 /**
  * components/header.js
  * ====================
- * Header bar, navigation tabs, environment indicator, demo mode alert banner, and theme switch.
+ * Header bar, navigation tabs, persistent DEMO MODE — SIMULATED DATA indicator, demo reset, and settings.
  */
 
 import { CONFIG, setDemoMode, setTheme, setApiBaseUrl } from '../config.js';
@@ -51,10 +51,16 @@ export function renderHeader(state) {
         </nav>
 
         <div class="header-actions">
-          <div class="env-pill ${isDemo ? 'env-demo' : 'env-live'}" title="API Target: ${escapeHTML(CONFIG.API_BASE_URL)}">
+          <div class="env-pill ${isDemo ? 'env-demo' : 'env-live'}" title="${isDemo ? 'Demo Mode: Offline execution with simulated test fixtures' : 'Live Mode connected to API at ' + escapeHTML(CONFIG.API_BASE_URL)}">
             <span class="status-dot"></span>
-            <span>${isDemo ? 'DEMO DATA' : 'LIVE API'}</span>
+            <span>${isDemo ? 'DEMO MODE — SIMULATED DATA' : 'LIVE API'}</span>
           </div>
+
+          ${isDemo ? `
+            <button id="reset-demo-btn" class="btn btn-sm btn-outline" title="Reset all demo interactions, reviews, and votes back to pristine state">
+              Reset Demo
+            </button>
+          ` : ''}
 
           <button id="toggle-demo-btn" class="btn btn-sm ${isDemo ? 'btn-warning' : 'btn-outline'}" 
                   title="${isDemo ? 'Disable Demo Mode and connect to Live API' : 'Enable Demo Mode with labelled synthetic fixtures'}">
@@ -86,8 +92,8 @@ export function renderHeader(state) {
       ${isDemo ? `
         <div class="demo-banner" role="alert">
           <div class="container demo-banner-content">
-            <span class="demo-badge">DEMO DATA ACTIVE</span>
-            <span>All proposal records and traces below are synthetic educational test fixtures. They do NOT represent real on-chain evidence or active governance contracts.</span>
+            <span class="demo-badge">DEMO MODE — SIMULATED DATA</span>
+            <span>Offline educational simulation harness. Seeded proposals, bytecode diffs, and review decisions are simulated demonstration fixtures. No live blockchain, real wallets, or transactions required.</span>
           </div>
         </div>
       ` : ''}

@@ -7,7 +7,7 @@
  * - Shows claims, actual effects, risks, and evidence for manual auditor review.
  * - STRICT: APPROVE, REJECT, and ESCALATE actions require a mandatory written reason (min 10 chars).
  * - Displays reviewer identity and signature verification status.
- * - STRICT: Never reports success on failed requests. Real API call or clear demo notice.
+ * - In demo mode, records simulated decisions with clear [SIMULATED LOCAL] badges.
  */
 
 import { escapeHTML, truncateAddress } from '../security.js';
@@ -27,7 +27,7 @@ export function renderReviewerQueue(state) {
         </div>
         <div class="header-tags">
           <span class="badge badge-warning">${needsReviewProposals.length} Proposals Awaiting Action</span>
-          ${isDemo ? '<span class="badge badge-warning">DEMO MODE</span>' : ''}
+          ${isDemo ? '<span class="badge badge-warning">DEMO MODE — SIMULATED DATA</span>' : ''}
         </div>
       </div>
 
@@ -42,6 +42,7 @@ export function renderReviewerQueue(state) {
           ${needsReviewProposals.map(p => {
             const v = p.verdict || {};
             const findings = v.findings || [];
+            const reviews = p.reviews || [];
 
             return `
               <div class="card reviewer-item-card" data-proposal-id="${escapeHTML(p.id)}">
@@ -81,6 +82,21 @@ export function renderReviewerQueue(state) {
                   <span>Proposer: <code>${truncateAddress(p.proposer)}</code></span>
                   <span>Trace Integrity: <strong>${v.traceComplete ? '✓ Complete' : '⚠ Truncated'}</strong></span>
                 </div>
+
+                ${reviews.length > 0 ? `
+                  <div class="reviewer-history-box" style="margin-top: 12px; padding: 10px; background: rgba(59, 130, 246, 0.08); border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+                    <span class="sub-label font-bold">Recorded Auditor Attestations:</span>
+                    ${reviews.map(r => `
+                      <div class="review-entry text-xs" style="margin-top: 4px;">
+                        <span class="badge badge-sm ${r.action === 'APPROVE' ? 'badge-success' : r.action === 'REJECT' ? 'badge-danger' : 'badge-warning'}">
+                          ${escapeHTML(r.action)}
+                        </span>
+                        <span>${r.simulated ? ' [SIMULATED LOCAL]' : ''}: <em>"${escapeHTML(r.reason)}"</em></span>
+                        <span class="text-muted"> — by <code>${truncateAddress(r.reviewer)}</code></span>
+                      </div>
+                    `).join('')}
+                  </div>
+                ` : ''}
 
                 <!-- Reviewer Action Form -->
                 <form class="reviewer-action-form" onsubmit="return false;" data-id="${escapeHTML(p.id)}">

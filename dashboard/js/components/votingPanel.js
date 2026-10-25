@@ -8,6 +8,7 @@
  * - STRICT: Clearly states that this is an acknowledgement, not proof of comprehension.
  * - Submits votes only through a real configured voting integration; otherwise displays explicit unavailable state.
  * - Vote button remains disabled until acknowledgement and respects backend availability.
+ * - In demo mode, records simulated votes locally and displays clear [SIMULATED DEMO] labels.
  */
 
 import { escapeHTML } from '../security.js';
@@ -69,9 +70,16 @@ export function renderVotingPanel(proposal, isDemoMode) {
       </div>
 
       <div id="voting-feedback" class="voting-feedback-area">
+        ${proposal.userVote ? `
+          <div class="user-vote-pill info-pill" style="margin-bottom: 8px; background: rgba(16, 185, 129, 0.15); border: 1px solid var(--color-verified);">
+            <span>Recorded Ballot: <strong>VOTE ${escapeHTML(proposal.userVote.choice)}</strong></span>
+            <span class="badge badge-sm badge-success">${proposal.userVote.simulated ? 'SIMULATED DEMO' : 'RECORDED'}</span>
+            <span class="text-xs text-muted" style="margin-left: 8px;">(${new Date(proposal.userVote.timestamp).toLocaleTimeString()})</span>
+          </div>
+        ` : ''}
         ${isDemoMode ? `
           <div class="info-pill text-muted">
-            ℹ️ <strong>Demo Environment:</strong> Voting contract RPC integration is in offline test mode. Real vote broadcasting requires an active on-chain Governor integration.
+            ℹ️ <strong>Demo Environment:</strong> Voting operates in offline simulated test mode. Casting a vote records a simulated ballot locally without submitting an on-chain transaction.
           </div>
         ` : ''}
       </div>

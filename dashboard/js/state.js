@@ -2,7 +2,10 @@
  * state.js
  * ========
  * Reactive state store for Veritas Gate Phase 6 Dashboard.
+ * Includes local persistence and reset capabilities for demo interactions.
  */
+
+import { STORAGE_KEYS } from './config.js';
 
 export class StateStore {
   constructor() {
@@ -66,9 +69,16 @@ export class StateStore {
   }
 
   setProposals(proposals) {
-    this.state.proposals = Array.isArray(proposals) ? proposals : [];
-    // If no proposal selected, select the first one if available
-    if (!this.state.selectedProposal && this.state.proposals.length > 0) {
+    this.state.proposals = Array.isArray(proposals) ? proposals.map(p => ({ ...p })) : [];
+    // If in demo mode, apply persisted local demo interactions
+    if (this.state.isDemoData) {
+      this.loadPersistedDemoActions();
+    }
+    // If no proposal selected or previously selected proposal exists, re-sync selection
+    if (this.state.selectedProposal) {
+      const reFound = this.state.proposals.find(p => p.id === this.state.selectedProposal.id);
+      this.state.selectedProposal = reFound || (this.state.proposals.length > 0 ? this.state.proposals[0] : null);
+    } else if (this.state.proposals.length > 0) {
       this.state.selectedProposal = this.state.proposals[0];
     }
     this.notify();
@@ -84,6 +94,91 @@ export class StateStore {
     if (found) {
       this.setSelectedProposal(found);
     }
+  }
+
+  recordReviewDecision(proposalId, reviewData) {
+    const prop = this.state.proposals.find(p => p.id === proposalId);
+    if (prop) {
+      if (!prop.reviews) prop.reviews = [];
+      prop.reviews.push(reviewData);
+
+      // Update proposal status according to reviewer action
+      if (reviewData.action === 'APPROVE') {
+        prop.status = 'CLEARED_BY_AUDITOR';
+        if (prop.verdict) {
+          prop.verdict.reviewedStatus = 'APPROVED_BY_AUDITOR';
+        }
+      } else if (reviewData.action === 'REJECT') {
+        prop.status = 'REJECTED_BY_AUDITOR';
+        if (prop.verdict) {
+          prop.verdict.reviewedStatus = 'REJECTED_BY_AUDITOR';
+        }
+      } else if (reviewData.action === 'ESCALATE') {
+        prop.status = 'ESCALATED_TO_MULTISIG';
+        if (prop.verdict) {
+          prop.verdict.reviewedStatus = 'ESCALATED';
+        }
+      }
+
+      this.persistDemoActions();
+      this.notify();
+    }
+  }
+
+  recordVote(proposalId, voteData) {
+    const prop = this.state.proposals.find(p => p.id === proposalId);
+    if (prop) {
+      prop.userVote = voteData;
+      this.persistDemoActions();
+      this.notify();
+    }
+  }
+
+  persistDemoActions() {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const reviews = {};
+        const votes = {};
+        for (const p of this.state.proposals) {
+          if (p.reviews && p.reviews.length > 0) reviews[p.id] = p.reviews;
+          if (p.userVote) votes[p.id] = p.userVote;
+          if (p.status) reviews[`${p.id}_status`] = p.status;
+        }
+        localStorage.setItem(STORAGE_KEYS.DEMO_REVIEWS, JSON.stringify(reviews));
+        localStorage.setItem(STORAGE_KEYS.DEMO_VOTES, JSON.stringify(votes));
+      }
+    } catch (_) {}
+  }
+
+  loadPersistedDemoActions() {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const reviewsRaw = localStorage.getItem(STORAGE_KEYS.DEMO_REVIEWS);
+        const votesRaw = localStorage.getItem(STORAGE_KEYS.DEMO_VOTES);
+        if (reviewsRaw) {
+          const reviews = JSON.parse(reviewsRaw);
+          for (const p of this.state.proposals) {
+            if (reviews[p.id]) p.reviews = reviews[p.id];
+            if (reviews[`${p.id}_status`]) p.status = reviews[`${p.id}_status`];
+          }
+        }
+        if (votesRaw) {
+          const votes = JSON.parse(votesRaw);
+          for (const p of this.state.proposals) {
+            if (votes[p.id]) p.userVote = votes[p.id];
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  resetDemoActions() {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(STORAGE_KEYS.DEMO_REVIEWS);
+        localStorage.removeItem(STORAGE_KEYS.DEMO_VOTES);
+      }
+    } catch (_) {}
   }
 
   setFilters(partialFilters) {
@@ -152,7 +247,6 @@ export class StateStore {
         return new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0);
       }
       if (sortBy === 'verdict') {
-        // Order: MISMATCH first (critical), then NEEDS_REVIEW, then VERIFIED
         const rank = { MISMATCH: 1, NEEDS_REVIEW: 2, VERIFIED: 3 };
         const rankA = rank[a.verdict?.status] || 9;
         const rankB = rank[b.verdict?.status] || 9;

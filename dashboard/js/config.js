@@ -5,18 +5,20 @@
  * 
  * Rules:
  * - Real API configuration; no hardcoded assumptions.
- * - Demo mode disabled by default.
+ * - Demo mode enabled by default for local development (Fix 0 runnable foundation).
  * - Zero secrets or private keys.
  */
 
-const STORAGE_KEYS = {
+export const STORAGE_KEYS = {
   API_URL: 'veritas_gate_api_url',
   DEMO_MODE: 'veritas_gate_demo_mode',
   THEME: 'veritas_gate_theme',
-  ACTIVE_PROPOSAL: 'veritas_gate_active_proposal'
+  ACTIVE_PROPOSAL: 'veritas_gate_active_proposal',
+  DEMO_REVIEWS: 'veritas_gate_demo_reviews',
+  DEMO_VOTES: 'veritas_gate_demo_votes'
 };
 
-function safeGetStorage(key, fallback = null) {
+export function safeGetStorage(key, fallback = null) {
   try {
     if (typeof localStorage !== 'undefined') {
       const val = localStorage.getItem(key);
@@ -26,7 +28,7 @@ function safeGetStorage(key, fallback = null) {
   return fallback;
 }
 
-function safeSetStorage(key, val) {
+export function safeSetStorage(key, val) {
   try {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(key, String(val));
@@ -41,8 +43,8 @@ export const CONFIG = {
     return (!val || val.includes(':8000')) ? 'http://127.0.0.1:5000' : val;
   })(),
   
-  // FAIL-CLOSED / SAFETY RULE: Demo mode is strictly disabled by default
-  DEMO_MODE: safeGetStorage(STORAGE_KEYS.DEMO_MODE, 'false') === 'true',
+  // DEMO MODE BY DEFAULT: Enabled by default for effortless local development
+  DEMO_MODE: safeGetStorage(STORAGE_KEYS.DEMO_MODE, 'true') === 'true',
   
   THEME: safeGetStorage(STORAGE_KEYS.THEME, 'dark'),
   
@@ -82,4 +84,15 @@ export function setTheme(theme) {
   if (typeof document !== 'undefined' && document.documentElement) {
     document.documentElement.setAttribute('data-theme', CONFIG.THEME);
   }
+}
+
+export function resetDemoData() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(STORAGE_KEYS.DEMO_REVIEWS);
+      localStorage.removeItem(STORAGE_KEYS.DEMO_VOTES);
+      localStorage.setItem(STORAGE_KEYS.DEMO_MODE, 'true');
+    }
+  } catch (_) {}
+  CONFIG.DEMO_MODE = true;
 }

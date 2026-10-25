@@ -27,6 +27,7 @@ def run_server(port=DEFAULT_PORT):
     dashboard_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(dashboard_dir)
 
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", port), DashboardHandler) as httpd:
         print(f"\n=======================================================")
         print(f" Veritas Gate Dashboard running at: http://localhost:{port}")
