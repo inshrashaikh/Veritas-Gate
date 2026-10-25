@@ -108,22 +108,126 @@ pip install -r analyzer/requirements.txt
 
 ---
 
-## 6. Running Tests & Scenarios
+---
 
-### Run Pytest Suite
+## 7. Phase 5: API, Human Review Queue & Evidence Provenance
+
+Phase 5 builds an HTTP REST API and state management layer that links simulation evidence, deterministic verdicts, proposal records, evidence provenance manifests, and human review decisions.
+
+```
+analyzer/
+├── server.py              # Flask REST API endpoints and error handlers
+├── review_queue.py        # Off-chain review queue state machine with atomic JSON persistence
+├── provenance.py          # Evidence provenance manifest & SHA-256 integrity verification
+├── contract_adapter.py    # Local Web3 adapter for Phase 4 ProposalRegistry & VerdictOracle
+└── tests/
+    ├── test_provenance.py        # Evidence hash verification and tamper detection tests
+    ├── test_review_queue_unit.py # State machine transitions, authorization & persistence tests
+    └── test_api.py               # Flask endpoints, payload limits, audit trail & error handling tests
+```
+
+---
+
+### REST API Endpoints
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/health` | Health check returning API status and local RPC connectivity. |
+| `POST` | `/proposals` | Register a new proposal version, compute text/calldata hashes, and record evidence manifests. |
+| `GET` | `/proposals/<id>` | Retrieve complete version history and latest state of a proposal. |
+| `POST` | `/analyze` | Execute deterministic EVM simulation. If high-risk patterns are detected, auto-enqueues proposal in `NEEDS_REVIEW` review queue. |
+| `GET` | `/reviews` | List items in review queue, optionally filtered by `?status=PENDING\|APPROVED\|REJECTED\|ESCALATED`. |
+| `POST` | `/reviews/<id>/<version>` | Submit human reviewer decision (`APPROVE`, `REJECT`, `ESCALATE`) with mandatory non-empty reason. |
+| `GET` | `/audit/<proposal_id>` | Chronological audit trail aggregating proposal registrations, automated verdicts, and review records. |
+
+---
+
+### Evidence Provenance & Cryptographic Integrity
+
+The evidence provenance subsystem (`analyzer/provenance.py`) tracks supporting artifacts (proposal PDFs, research specs, simulation output):
+- **Cryptographic Integrity**: Computes SHA-256 digests (`0x...`) for submitted content and validates against expected hashes. Raises `TamperedContentError` if bytes do not match.
+- **Distinction from Factual Truth**: Cryptographic hash matching guarantees that bytes have not been altered in transit or storage since retrieval. It **never** attests that factual claims or statements within the text are objectively true.
+- **Immutable Audit Records**: Version-bound manifests prevent retroactive substitution of evidence.
+
+---
+
+### Human Review Queue State Machine
+
+Proposals evaluated as `NEEDS_REVIEW` enter the review queue (`analyzer/review_queue.py`):
+```
+                 [ Enqueue ]
+                      │
+                      ▼
+               ┌──────────────┐
+       ┌───────│   PENDING    │───────┐
+       │       └──────────────┘       │
+       ▼              │               ▼
+┌──────────────┐      │        ┌──────────────┐
+│  ESCALATED   │◄─────┘        │   REJECTED   │ (Terminal)
+└──────────────┘               └──────────────┘
+       │                              
+       ├──────────────┬───────────────┐
+       ▼              ▼               ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│  ESCALATED   │ │   APPROVED   │ │   REJECTED   │
+└──────────────┘ └──────────────┘ └──────────────┘
+                    (Terminal)       (Terminal)
+```
+- **Authorized Reviewers**: Reviews are rejected unless submitted by an explicitly authorized address.
+- **Mandatory Reason**: Non-empty rationale required for all decisions.
+- **Terminal States**: `APPROVED` and `REJECTED` are final; subsequent review attempts return HTTP 409 Conflict.
+- **Preserved History**: Previous automated verdicts and intermediate triage decisions (e.g. `ESCALATE`) are appended to an immutable review list and never overwritten.
+
+---
+
+### Contract Interface & Adapter Notes
+
+`analyzer/contract_adapter.py` interfaces with Phase 4 contracts (`ProposalRegistry`, `VerdictOracle`):
+- **Local Anvil Only**: Uses `anvil_impersonateAccount` for test transactions. No private keys are generated, stored, or accepted over the API.
+- **Decoupled Confirmation**: Off-chain queue state is updated immediately, while on-chain transaction hash and confirmation receipt status are tracked separately.
+- **Interface Mismatch Handling**: `VerdictOracle.sol` defines on-chain review decisions as `APPROVE (1)` and `REJECT (2)`. The off-chain queue's `ESCALATE` state is an internal triage milestone and is **not** broadcast as an on-chain review decision, avoiding contract authorization bypass.
+
+---
+
+### Persistence Approach
+
+Data is stored locally under `analyzer/data/` (or a configured test directory) in structured JSON files:
+- `review_queue.json`: Queue items, state, and review history.
+- `provenance.json`: Evidence manifests and verification status.
+- `proposals.json`: Proposal versions, text hashes, and disclosed wallets.
+
+**Atomic File Writes**: All writes write to a temporary file (`tempfile.NamedTemporaryFile`) in the same directory followed by an atomic `os.replace`. This prevents corruption in the event of an unexpected termination during write.
+
+---
+
+### Security & Hackathon Disclaimer
+
+> [!WARNING]
+> This server is a **local hackathon prototype** intended for pair testing with local Foundry/Anvil nodes.
+> - It does not implement production TLS or public authentication middleware.
+> - Reviewer authorization relies on trusted local configuration (`authorized_reviewers` set).
+> - Payload sizes are strictly capped at 2MB (`MAX_CONTENT_LENGTH = 2 * 1024 * 1024`).
+> - The API enforces that client inputs cannot override automated deterministic verdicts.
+
+---
+
+### Running the API & Tests
+
+#### Start API Server
 ```bash
+.venv/bin/python -m analyzer.server
+```
+Runs at `http://127.0.0.1:5000`.
+
+#### Run All Python Tests
+```bash
+export PATH="$HOME/.foundry/bin:$PATH"
 .venv/bin/pytest -q
 ```
-Expected output:
-```text
-25 passed in ...s
-```
 
-### Run Scenario via CLI
+#### Run Foundry Contract Tests
 ```bash
-# Start local anvil in another terminal if not running:
-# anvil
-
-# Run honest grant simulation:
-.venv/bin/python -m analyzer.simulate analyzer/examples/honest_grant.json
+export PATH="$HOME/.foundry/bin:$PATH"
+forge test -vv
 ```
+
